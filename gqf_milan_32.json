@@ -1,0 +1,59 @@
+{
+  "base_config": "common.json",
+  "release": {
+    "project": "milan",
+    "device_name": "milan",
+    "stage": "OTA6 第二轮",
+    "version": "7.3.0.1",
+    "variant": "Milan(32M&64M) OTA6 第二轮 v7.3.0.1",
+    "notes": ""
+  },
+  "vars": {
+    "tag": "milan_32_3/19",
+    "boot_tag": "milan-bootloader-2.2.4",
+    "recovery_tag": "milan-recovery-2.3.1",
+    "fct_tag": "milan_pro-fct-4.4.2",
+    "release_version_name": "7.3.0",
+    "debug_version_name": "7.3.1",
+    "fct_version_name": "4.6.0",
+    "prev_version_name": "7.1.0.2",
+    "prev_version_code": "202603191555",
+    "build_mode": "OTA,OTA_SLEEP,FCT,BOOT,RECOVERY"
+  },
+  "changelog": {
+    "jenkins_job_url": "",
+    "build_url": "",
+    "build_number": 0,
+    "status": "",
+    "result": "",
+    "triggered_at": "",
+    "updated_at": ""
+  },
+  "jenkins": {
+    "triggers": {
+      "job_url": "",
+      "release": {
+        "parameters": {
+          "AUTH_CFG_AUTO_BINDING": "",
+          "FW_VER_STRATEGY_ENV": ""
+        }
+      }
+    },
+    "builds": {
+      "debug": {
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/4899/"
+      },
+      "release": {
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/4898/"
+      }
+    }
+  },
+  "nas": {
+    "remote": {
+      "base_dir": "/GT智能手表事业部/软件部/软件版本文档/Milan/用户固件"
+    }
+  },
+  "feishu": {
+    "template_node_token": "WxDvwNErQilq4GkYC4hctB1Kndd"
+  }
+}

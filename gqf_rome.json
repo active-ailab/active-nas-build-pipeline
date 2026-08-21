@@ -1,0 +1,59 @@
+{
+  "base_config": "common.json",
+  "release": {
+    "project": "rome_64m",
+    "device_name": "rome_64m",
+    "stage": "OTA5 第二轮",
+    "version": "4.1.0.2",
+    "variant": "Rome OTA5 第二轮 v4.1.0.2",
+    "notes": ""
+  },
+  "vars": {
+    "tag": "mpr64_3/19",
+    "boot_tag": "rome-bootloader-2.0.1",
+    "recovery_tag": "rome-recovery-2.0.1",
+    "fct_tag": "rome-fct-1.8.0",
+    "release_version_name": "4.1.0",
+    "debug_version_name": "4.1.1",
+    "fct_version_name": "4.1.0",
+    "prev_version_name": "4.0.0.1",
+    "prev_version_code": "202603092231",
+    "build_mode": "OTA,OTA_SLEEP,FCT,BOOT,RECOVERY"
+  },
+  "changelog": {
+    "jenkins_job_url": "",
+    "build_url": "",
+    "build_number": 0,
+    "status": "",
+    "result": "",
+    "triggered_at": "",
+    "updated_at": ""
+  },
+  "jenkins": {
+    "triggers": {
+      "job_url": "",
+      "release": {
+        "parameters": {
+          "AUTH_CFG_AUTO_BINDING": "",
+          "FW_VER_STRATEGY_ENV": ""
+        }
+      }
+    },
+    "builds": {
+      "debug": {
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/4907/"
+      },
+      "release": {
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/4906/"
+      }
+    }
+  },
+  "nas": {
+    "remote": {
+      "base_dir": "/GT智能手表事业部/软件部/软件版本文档/Rome/用户固件"
+    }
+  },
+  "feishu": {
+    "template_node_token": "QPs3wSUHwinJDxk66O8cnNqXnE6"
+  }
+}

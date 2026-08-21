@@ -1,0 +1,1487 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>固件发版配置</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/css/tom-select.css"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/js/tom-select.complete.min.js"></script>
+    <!-- 飞书 JSSDK：免登获取用户 open_id（本地托管，绕过内网防火墙拦截飞书CDN） -->
+    <script src="{{ url_for('static', filename='js/feishu-sdk.js') }}?v={{ version }}"></script>
+
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/style.css') }}"
+    />
+    <script src="{{ url_for('static', filename='js/platform_config.js') }}?v={{ version }}"></script>
+    <script src="{{ url_for('static', filename='js/index.js') }}?v={{ version }}"></script>
+    <style>
+      .step-node { cursor: pointer; transition: transform 0.15s; }
+      .step-node:hover { transform: scale(1.05); }
+      .step-node:hover .step-dot { box-shadow: 0 0 0 3px rgba(22,93,255,0.3); }
+
+      /* ====== 未登录引导横幅 ====== */
+      .login-guide-banner {
+        margin-bottom: 1.5rem;
+        animation: slideDown 0.5s ease-out;
+      }
+      @keyframes slideDown {
+        from { opacity: 0; transform: translateY(-20px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      .login-guide-inner {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 1rem 1.5rem;
+        border-radius: 16px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        box-shadow: 0 8px 32px rgba(102,126,234,0.35);
+        position: relative;
+        overflow: hidden;
+      }
+      .login-guide-inner::before {
+        content: '';
+        position: absolute;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 50%);
+        animation: shimmer 3s ease-in-out infinite;
+      }
+      @keyframes shimmer {
+        0%, 100% { transform: translate(-10%, -10%); }
+        50%      { transform: translate(10%, 10%); }
+      }
+      .login-guide-mascot {
+        display: flex;
+        align-items: center;
+        position: relative;
+        flex-shrink: 0;
+      }
+      .mascot-face {
+        font-size: 2.5rem;
+        animation: bounce 1.5s ease-in-out infinite;
+        position: relative;
+        z-index: 1;
+      }
+      @keyframes bounce {
+        0%, 100% { transform: translateY(0); }
+        30%      { transform: translateY(-12px); }
+        50%      { transform: translateY(0); }
+        70%      { transform: translateY(-6px); }
+        85%      { transform: translateY(0); }
+      }
+      .mascot-bubble {
+        position: absolute;
+        top: -18px;
+        right: -16px;
+        font-size: 1.1rem;
+        animation: float 2s ease-in-out infinite;
+        z-index: 2;
+      }
+      @keyframes float {
+        0%, 100% { transform: translateY(0) rotate(0deg); }
+        25%      { transform: translateY(-8px) rotate(5deg); }
+        75%      { transform: translateY(2px) rotate(-5deg); }
+      }
+      .login-guide-text {
+        flex: 1;
+        color: #fff;
+        position: relative;
+        z-index: 1;
+      }
+      .login-guide-title {
+        font-size: 1.05rem;
+        font-weight: 700;
+        margin: 0 0 2px 0;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.15);
+      }
+      .login-guide-sub {
+        font-size: 0.85rem;
+        opacity: 0.85;
+        margin: 0;
+      }
+      .login-guide-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0.55rem 1.4rem;
+        border: none;
+        border-radius: 30px;
+        background: #fff;
+        color: #667eea;
+        font-size: 0.9rem;
+        font-weight: 700;
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+        transition: all 0.25s;
+        position: relative;
+        z-index: 1;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.12);
+        animation: pulse-btn 2s ease-in-out infinite;
+      }
+      @keyframes pulse-btn {
+        0%, 100% { box-shadow: 0 4px 15px rgba(0,0,0,0.12); }
+        50%      { box-shadow: 0 6px 25px rgba(255,255,255,0.4), 0 4px 15px rgba(0,0,0,0.12); }
+      }
+      .login-guide-btn:hover {
+        transform: scale(1.06);
+        box-shadow: 0 6px 25px rgba(255,255,255,0.5);
+        color: #5a6fd6;
+      }
+      /* TSCAN 参数可编辑输入框 */
+      .tscan-param-input {
+        border: 1px solid #d1d5db;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-size: 0.85rem;
+        font-family: 'Consolas', 'Courier New', monospace;
+        color: #374151;
+        background: #f9fafb;
+        width: 240px;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .tscan-param-input:focus {
+        border-color: #7c3aed;
+        background: #fff;
+        box-shadow: 0 0 0 2px rgba(124,58,237,0.1);
+      }
+      /* TomSelect 发版分支 & Wiki Token：禁止 flex-wrap 避免聚焦换行高度突变 */
+      select.tomselected + .ts-wrapper .ts-control {
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        min-height: 40px !important;
+        max-height: 40px !important;
+        height: 40px !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+      }
+      select.tomselected + .ts-wrapper .ts-control .item {
+        line-height: 1.4 !important;
+        margin: 1px 3px !important;
+        white-space: nowrap !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="min-h-screen bg-gray-50" style="padding-top:4.375rem">
+      <!-- 顶部导航 -->
+      <div
+        class="top-nav bg-primary text-white px-6 py-4 flex items-center justify-between shadow-md"
+      >
+        <div class="flex items-center gap-3">
+          <div class="logo-icon"><i class="fa fa-cubes text-xl"></i></div>
+          <span class="text-xl font-bold">固件发版配置系统</span>
+        </div>
+        <div class="flex items-center gap-4">
+          <div id="loginStatus" class="text-sm opacity-80 flex items-center gap-2">
+            <i class="fa fa-user"></i>
+            <span id="loginUsername">未登录</span>
+          </div>
+          <button id="loginBtn" onclick="showLoginModal()" class="text-sm bg-white/20 px-3 py-1 rounded hover:bg-white/30 transition">登录</button>
+          <button id="logoutBtn" onclick="doLogout()" class="text-sm bg-white/20 px-3 py-1 rounded hover:bg-white/30 transition hidden">退出</button>
+          <button id="statsBtn" onclick="showStatsModal()" class="text-sm bg-white/20 px-3 py-1 rounded hover:bg-white/30 transition hidden" title="数据统计">📊 统计</button>
+          <div id="notifyIdCfg" class="flex items-center gap-1 text-xs">
+            <span class="opacity-60" title="飞书通知：首次使用需私聊Bot发送绑定码">🔔</span>
+            <input id="notifyOpenIdInput" type="text" readonly placeholder="绑定中..." style="width:170px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:2px 6px;color:#fbbf24;font-size:11px;" title="打开页面后自动生成绑定码，私聊飞书Bot发送此码即可">
+            <span id="notifyIdHelp" class="cursor-pointer opacity-60 hover:opacity-100" title="首次使用：页面自动生成绑定码 → 私聊飞书Bot发送该码 → 完成绑定" onclick="alert('绑定方式：\n1. 页面右上角自动显示 4 位绑定码\n2. 在飞书中私聊Bot发送该码\n3. 页面自动完成绑定\n\n绑定后所有任务完成时都会给你发飞书通知。')">❓</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="max-w-4xl mx-auto px-4 py-8">
+        <!-- 未登录引导横幅 -->
+        <div id="loginGuideBanner" class="login-guide-banner hidden">
+          <div class="login-guide-inner">
+            <div class="login-guide-mascot">
+              <span class="mascot-bubble">🔐</span>
+              <span class="mascot-face">🤖</span>
+            </div>
+            <div class="login-guide-text">
+              <p class="login-guide-title">嘿！需要先登录才能发版哦~</p>
+              <p class="login-guide-sub">登录 Jenkins 账号，解锁全部功能</p>
+            </div>
+            <button onclick="showLoginModal()" class="login-guide-btn">
+              <i class="fa fa-sign-in"></i> 立即登录
+            </button>
+          </div>
+        </div>
+        <!-- 页面标题 -->
+        <div class="text-center mb-10">
+          <h1 class="page-title">固件发版配置</h1>
+          <p class="page-subtitle mt-2">Firmware Release Configuration</p>
+        </div>
+        <!-- 步骤条 -->
+        <div class="step-indicator-wrap mb-12 px-2">
+          <div class="step-timeline flex items-center justify-between max-w-4xl mx-auto">
+            <div class="step-node current" onclick="goToStep(1)" style="cursor:pointer" title="返回第 1 步">
+              <div id="step1" class="step-dot bg-primary text-white">1</div>
+              <p class="step-label active">选择打包设备平台</p>
+            </div>
+            <div id="line1" class="progress-line bg-gray-200"></div>
+            <div class="step-node" onclick="goToStep(2)" style="cursor:pointer" title="返回第 2 步">
+              <div id="step2" class="step-dot bg-wait text-white">2</div>
+              <p class="step-label waiting">选择目标项目</p>
+            </div>
+            <div id="line2" class="progress-line bg-gray-200"></div>
+            <div class="step-node" onclick="goToStep(3)" style="cursor:pointer" title="返回第 3 步">
+              <div id="step3" class="step-dot bg-wait text-white">3</div>
+              <p class="step-label waiting">选择功能入口</p>
+            </div>
+            <div id="line3" class="progress-line bg-gray-200"></div>
+            <div class="step-node" onclick="goToStep(4)" style="cursor:pointer" title="返回第 4 步">
+              <div id="step4" class="step-dot bg-wait text-white">4</div>
+              <p class="step-label waiting">新项目参数发版</p>
+            </div>
+            <div id="line4" class="progress-line bg-gray-200"></div>
+            <div class="step-node" onclick="goToStep(5)" style="cursor:pointer" title="返回第 5 步">
+              <div id="step5" class="step-dot bg-wait text-white">5</div>
+              <p class="step-label waiting">填写发版参数</p>
+            </div>
+            <div id="line5" class="progress-line bg-gray-200"></div>
+            <div class="step-node" onclick="goToStep(6)" style="cursor:pointer" title="返回第 6 步">
+              <div id="step6" class="step-dot bg-wait text-white">6</div>
+              <p class="step-label waiting">构建参数配置</p>
+            </div>
+            <div id="line6" class="progress-line bg-gray-200"></div>
+            <div class="step-node" onclick="goToStep(7)" style="cursor:pointer" title="返回第 7 步">
+              <div id="step7" class="step-dot bg-wait text-white">7</div>
+              <p class="step-label waiting">配置确认</p>
+            </div>
+            <div id="line7" class="progress-line bg-gray-200"></div>
+            <div class="step-node" onclick="goToStep(8)" style="cursor:pointer" title="编译执行">
+              <div id="step8" class="step-dot bg-wait text-white">8</div>
+              <p class="step-label waiting">编译执行</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="main-card bg-white rounded-xl shadow-sm p-6 md:p-8 max-w-4xl mx-auto">
+          <!-- 第一步：选择平台 -->
+          <div id="form1" style="display: block">
+            <div class="step-heading">1. 选择打包设备平台</div>
+            <div class="space-y-6 mt-4">
+              <div class="grid grid-cols-1 gap-4 mx-auto" style="max-width: 400px;">
+          <label class="relative cursor-pointer">
+            <input type="radio" name="platform" value="MHS003" class="sr-only peer">
+            <div class="radio-card py-5 px-4 min-h-[60px] flex items-center">
+              <div class="text-gray-800 font-semibold text-base">MHS003</div>
+              <div class="check-mark"><i class="fa fa-check"></i></div>
+            </div>
+          </label>
+          <label class="relative cursor-pointer">
+            <input type="radio" name="platform" value="MHS003S" class="sr-only peer">
+            <div class="radio-card py-5 px-4 min-h-[60px] flex items-center">
+              <div class="text-gray-800 font-semibold text-base">MHS003S</div>
+              <div class="check-mark"><i class="fa fa-check"></i></div>
+            </div>
+          </label>
+          <label class="relative cursor-pointer">
+            <input type="radio" name="platform" value="NXP595/Apollo4" class="sr-only peer">
+            <div class="radio-card py-5 px-4 min-h-[60px] flex items-center">
+              <div class="text-gray-800 font-semibold text-base">NXP595/Apollo4</div>
+              <div class="check-mark"><i class="fa fa-check"></i></div>
+            </div>
+          </label>
+        </div>
+            </div>
+            <div class="mt-8 flex justify-end">
+              <button
+                onclick="nextStep1()"
+                class="btn btn-primary"
+              >
+                确认并下一步 <i class="fa fa-arrow-right"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- 第二步：选择目标项目 -->
+          <div id="form2" style="display: none">
+            <div class="history-wrap">
+              <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                <div class="history-row">
+                  <span class="history-label">已选设备平台：</span
+                  ><span id="currentPlatform" class="history-value">--</span>
+                </div>
+              </div>
+            </div>
+            <div class="step-heading">2. 选择目标项目</div>
+            <div class="space-y-6 mt-4" style="min-height: 100px;">
+              <div>
+                <select
+                  id="deviceSelect"
+                  class="custom-select"
+                  placeholder="请选择目标项目..."
+                >
+                  <option value=""></option>
+                </select>
+                <div class="mt-2 text-sm text-gray-500">
+                  提示：输入关键词可搜索过滤，也可直接输入新目标项目名称
+                </div>
+              </div>
+            </div>
+            <div class="mt-8 flex justify-between">
+              <button
+                onclick="prevStep()"
+                class="btn btn-secondary"
+              >
+                <i class="fa fa-arrow-left"></i> 返回上一步
+              </button>
+              <button
+                onclick="nextStep2()"
+                class="btn btn-primary"
+              >
+                确认并下一步 <i class="fa fa-arrow-right"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- 第三步：选择功能入口 -->
+          <div id="form3" style="display: none">
+            <div class="history-wrap">
+              <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                <div class="history-row">
+                  <span class="history-label">设备平台：</span
+                  ><span id="confirmPlatform" class="history-value">--</span>
+                </div>
+                <div class="history-row">
+                  <span class="history-label">目标项目：</span
+                  ><span id="confirmDevice" class="history-value">--</span>
+                </div>
+              </div>
+            </div>
+            <div class="step-heading">3. 选择功能入口</div>
+            <div class="mt-4">
+              <div class="grid grid-cols-1 gap-4">
+                <label class="relative cursor-pointer">
+                  <input
+                    type="radio"
+                    name="publishType"
+                    value="newProject"
+                    checked
+                    class="sr-only peer"
+                  />
+                  <div class="radio-card p-6 h-full">
+                    <div class="flex items-start gap-4">
+                      <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center check-mark-icon">
+                        <i class="fa fa-file-text-o text-sm"></i>
+                      </div>
+                      <div>
+                        <h4 class="text-base font-semibold text-gray-800 mb-2">新填参数发版</h4>
+                        <p class="text-sm text-gray-500">创建全新的项目参数配置，自定义发版</p>
+                      </div>
+                    </div>
+                  </div>
+                </label>
+                <label class="relative cursor-pointer">
+                  <input
+                    type="radio"
+                    name="publishType"
+                    value="oldProject"
+                    class="sr-only peer"
+                  />
+                  <div class="radio-card p-6 h-full">
+                    <div class="flex items-start gap-4">
+                      <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center check-mark-icon">
+                        <i class="fa fa-history text-sm"></i>
+                      </div>
+                      <div>
+                        <h4 class="text-base font-semibold text-gray-800 mb-2">历史版本发版</h4>
+                        <p class="text-sm text-gray-500">复用已有项目的配置参数，快速发版</p>
+                      </div>
+                    </div>
+                  </div>
+                </label>
+                <label class="relative cursor-pointer">
+                  <input
+                    type="radio"
+                    name="publishType"
+                    value="skipJenkins"
+                    class="sr-only peer"
+                  />
+                  <div class="radio-card p-6 h-full">
+                    <div class="flex items-start gap-4">
+                      <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center check-mark-icon">
+                        <i class="fa fa-bolt text-sm"></i>
+                      </div>
+                      <div>
+                        <h4 class="text-base font-semibold text-gray-800 mb-2">直接生成文档 </h4>
+                        <p class="text-sm text-gray-500">Jenkins 已编译完成，直接生成版本文档</p>
+                      </div>
+                    </div>
+                  </div>
+                </label>
+                <label class="relative cursor-pointer">
+                  <input
+                    type="radio"
+                    name="publishType"
+                    value="changelog"
+                    class="sr-only peer"
+                  />
+                  <div class="radio-card p-6 h-full">
+                    <div class="flex items-start gap-4">
+                      <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center check-mark-icon">
+                        <i class="fa fa-code-fork text-sm"></i>
+                      </div>
+                      <div>
+                        <h4 class="text-base font-semibold text-gray-800 mb-2">版本差分changelog</h4>
+                        <p class="text-sm text-gray-500">对比两个版本差异，自动生成 changelog 文档</p>
+                      </div>
+                    </div>
+                  </div>
+                </label>
+                <label class="relative cursor-pointer">
+                  <input
+                    type="radio"
+                    name="publishType"
+                    value="tscan"
+                    class="sr-only peer"
+                  />
+                  <div class="radio-card p-6 h-full">
+                    <div class="flex items-start gap-4">
+                      <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center check-mark-icon">
+                        <i class="fa fa-shield text-sm"></i>
+                      </div>
+                      <div>
+                        <h4 class="text-base font-semibold text-gray-800 mb-2">构建 TSCAN</h4>
+                        <p class="text-sm text-gray-500">选择历史版本，单独触发 TSCAN 安全扫描构建</p>
+                      </div>
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </div>
+            <div class="mt-8 flex justify-between">
+              <button
+                onclick="prevStep()"
+                class="btn btn-secondary"
+              >
+                <i class="fa fa-arrow-left"></i> 返回上一步
+              </button>
+              <button
+                onclick="nextStep3()"
+                class="btn btn-primary"
+              >
+                确认并下一步 <i class="fa fa-arrow-right"></i>
+              </button>
+            </div>
+
+            <!-- Changelog 弹框 -->
+            <div class="info-overlay" id="changelogOverlay">
+              <div class="info-modal" style="max-width: 560px;">
+                <button class="info-close" onclick="closeChangelogModal()">&times;</button>
+                <div class="info-modal-header">
+                  <div class="info-modal-icon"><i class="fa fa-code-fork"></i></div>
+                  <h3>生成版本差分 Changelog</h3>
+                </div>
+                <div class="info-modal-body" style="text-align:left;">
+                  <div class="space-y-4">
+                    <div class="history-row">
+                      <span class="history-label">目标项目：</span>
+                      <input type="text" id="clDevice" class="param-input readonly" readonly />
+                    </div>
+                    <div class="history-row">
+                      <span class="history-label">Manifest 文件：</span>
+                      <input type="text" id="clManifest" class="param-input readonly" readonly />
+                    </div>
+                    <div class="history-row">
+                      <span class="history-label">旧版本（old）：</span>
+                      <select id="clPrevVersion" class="param-input" style="width:100%;"></select>
+                    </div>
+                    <div class="history-row">
+                      <span class="history-label">新版本（new）：</span>
+                      <select id="clCurrVersion" class="param-input" style="width:100%;"></select>
+                    </div>
+                    <div class="history-row">
+                      <span class="history-label">算法 tag：</span>
+                      <input type="text" id="clAfterTag" class="param-input readonly" readonly />
+                    </div>
+                  </div>
+                  <div class="mt-6 flex justify-end gap-2">
+                    <button onclick="closeChangelogModal()" class="btn btn-secondary">
+                      <i class="fa fa-times"></i> 取消
+                    </button>
+                    <button id="btnStartChangelog" onclick="startChangelogBuild()" class="btn btn-primary" disabled>
+                      <i class="fa fa-play"></i> 开始构建 changelog
+                    </button>
+                  </div>
+                  <div id="changelogRequiredHint" class="text-sm text-gray-400 mt-2 text-right">请先选择旧版本和新版本</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 第四步：选择历史版本 -->
+          <div id="form4" style="display: none">
+            <div class="history-wrap">
+              <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                <div class="history-row">
+                  <span class="history-label">设备平台：</span
+                  ><span id="step4Platform" class="history-value">--</span>
+                </div>
+                <div class="history-row">
+                  <span class="history-label">目标项目：</span
+                  ><span id="step4Device" class="history-value">--</span>
+                </div>
+              </div>
+              <div class="history-row mt-2">
+                <span class="history-label">功能入口：</span
+                ><span id="step4PublishType" class="history-value">--</span>
+              </div>
+            </div>
+            <div class="step-heading">4. 选择历史版本</div>
+            <div class="step7-section space-y-6 mt-4">
+              <div class="mb-6">
+                <h3 class="text-lg font-medium text-gray-800 mb-2">
+                  历史版本列表
+                </h3>
+                <p class="text-sm text-gray-500">
+                  选择一个历史版本，系统将自动填充相关发版参数
+                </p>
+              </div>
+              <div id="versionList" class="space-y-2">
+                <div class="text-center text-gray-400 py-8">加载中...</div>
+              </div>
+            </div>
+            <div class="mt-8 flex justify-between">
+              <button
+                onclick="prevStep()"
+                class="btn btn-secondary"
+              >
+                <i class="fa fa-arrow-left"></i> 返回上一步
+              </button>
+              <button
+                id="toForm5Btn"
+                onclick="nextStep4()"
+                class="btn btn-disabled flex items-center gap-2"
+              >
+                确认并下一步 <i class="fa fa-arrow-right"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- 第五步：填写参数 -->
+          <div id="form5" style="display: none">
+            <div class="history-wrap">
+              <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                <div class="history-row">
+                  <span class="history-label">设备平台：</span
+                  ><span id="paramStepPlatform" class="history-value">--</span>
+                </div>
+                <div class="history-row">
+                  <span class="history-label">目标项目：</span
+                  ><span id="paramStepDevice" class="history-value">--</span>
+                </div>
+              </div>
+              <div class="history-row mt-2">
+                <span class="history-label">功能入口：</span
+                ><span id="paramStepPublishType" class="history-value">--</span>
+              </div>
+              <div id="paramStepVersionWrap" class="history-row mt-2 hidden">
+                <span class="history-label">已选历史版本：</span
+                ><span id="paramStepVersionVal" class="history-value">--</span>
+              </div>
+              <div
+                id="paramStepHistDetailWrap"
+                class="mt-3 pt-3 border-t border-gray-200 hidden"
+              >
+                <div class="text-sm text-gray-500 mb-2 font-medium">
+                  历史版本详情
+                </div>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                  <div class="history-row">
+                    <span class="history-label">版本名称：</span
+                    ><span id="paramStepHistVariant" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">发版分支：</span
+                    ><span id="paramStepHistBranch" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">算法tag：</span
+                    ><span id="paramStepHistTagAlgo" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">Boot_Tag：</span
+                    ><span id="paramStepHistTagBoot" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">Recovery_Tag：</span
+                    ><span id="paramStepHistTagRecovery" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">Fct_Tag：</span
+                    ><span id="paramStepHistTagFct" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="step-heading">5. 填写发版信息            </div>
+            <!-- TSCAN 独立构建专用区域（与下方 normalWrap 互斥） -->
+            <div id="tscanStep5TscanWrap" style="display:none">
+              <div id="tscanStep5Card" class="mt-4 rounded-lg border border-purple-200 bg-purple-50 p-4">
+                <div class="flex items-center gap-3 mb-3">
+                  <div class="text-sm font-semibold text-purple-700">TSCAN 构建参数（基于历史版本预填）</div>
+                  <div id="tscanStep5Source" class="text-xs text-purple-500 bg-purple-100 px-2 py-0.5 rounded-full font-mono">--</div>
+                </div>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                  <div><span class="text-gray-500">项目标识：</span><input id="tscanStep5ProjectId" class="tscan-param-input" /></div>
+                  <div><span class="text-gray-500">版本号：</span><input id="tscanStep5Version" class="tscan-param-input" /></div>
+                  <div><span class="text-gray-500">算法 tag：</span><input id="tscanStep5TagAlgo" class="tscan-param-input" /></div>
+                  <div><span class="text-gray-500">boot_tag：</span><input id="tscanStep5TagBoot" class="tscan-param-input" /></div>
+                  <div><span class="text-gray-500">recovery_tag：</span><input id="tscanStep5TagRecovery" class="tscan-param-input" /></div>
+                  <div><span class="text-gray-500">fct_tag：</span><input id="tscanStep5TagFct" class="tscan-param-input" /></div>
+                  <div><span class="text-gray-500">BUILD_MODE：</span><input id="tscanStep5BuildMode" class="tscan-param-input" value="OTA,BOOT,RECOVERY" /></div>
+                  <div><span class="text-gray-500">TEST_TOOL：</span><input id="tscanStep5TestTool" class="tscan-param-input" value="否" /></div>
+                  <div><span class="text-gray-500">FCT_VER：</span><input id="tscanStep5FctVer" class="tscan-param-input" /></div>
+                  <div><span class="text-gray-500">VERSION_NAME：</span><input id="tscanStep5VersionName" class="tscan-param-input" /></div>
+                  <div><span class="text-gray-500">BUILD_RELEASE：</span><input id="tscanStep5BuildRelease" class="tscan-param-input" value="release" /></div>
+                  <div><span class="text-gray-500">TSCANCODE_CHECK：</span><span id="tscanStep5TscanCheck" class="text-green-700 font-semibold">YES</span></div>
+                </div>
+              </div>
+              <div class="mt-6 flex justify-between">
+                <button onclick="prevStep()" class="btn btn-secondary">
+                  <i class="fa fa-arrow-left"></i> 返回上一步
+                </button>
+                <button id="btnStartTscanBuild" onclick="startTscanBuildFromStep5()" class="btn btn-primary" style="background: #7c3aed;">
+                  <i class="fa fa-shield"></i> 基于上面的 TAG 版本信息开始构建 TSCAN
+                </button>
+              </div>
+            </div>
+            <!-- 普通发版表单区域（与上方 tscanWrap 互斥） -->
+            <div id="tscanStep5NormalWrap">
+            <div class="space-y-4 mt-4">
+              <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                <div class="history-row">
+                  <span class="param-label">项目标识：</span>
+                  <input
+                    type="text"
+                    id="projectId"
+                    class="param-input readonly"
+                    readonly
+                  />
+                </div>
+                <div class="history-row">
+                  <span class="param-label">项目阶段：</span>
+                  <input
+                    type="text"
+                    id="projectStage"
+                    class="param-input"
+                    oninput="handleInputChange(this)"
+                  />
+                </div>
+                <div class="history-row">
+                  <span class="param-label">版本号：</span>
+                  <input
+                    type="text"
+                    id="versionNumber"
+                    class="param-input"
+                    oninput="handleInputChange(this)"
+                    onblur="checkVersionFormat()"
+                  />
+                </div>
+                <div class="history-row">
+                  <span class="param-label">发版分支：</span>
+                  <select
+                    id="publishBranch"
+                    class="param-input"
+                    placeholder="选择或输入发版分支..."
+                    style="width:100%;"
+                  ></select>
+                </div>
+                <div class="history-row md:col-span-2">
+                  <span class="param-label">版本文档名称：</span>
+                  <input
+                    type="text"
+                    id="docName"
+                    class="param-input readonly"
+                    readonly
+                  />
+                </div>
+              </div>
+              <div id="wikiTokenWrap" class="history-row mt-4">
+                <span class="param-label">Wiki Token（选填）：</span>
+                <select
+                  id="wiki_token"
+                  class="param-input"
+                  placeholder="输入或选择 Wiki Token..."
+                  style="width:100%;"
+                ></select>
+              </div>
+              <div id="wikiTokenTip" class="history-row" style="margin-top:0.25rem;">
+                <span class="param-label"></span>
+                <span style="flex:1; font-size: 0.75rem; color: #94a3b8;">
+                  填写内容为该当前项目模板的Wiki Token，版本文档会基于当前飞书模版而生成
+                </span>
+              </div>
+              <div id="jenkinsUrlSection" style="display:none;" class="mt-4 space-y-3">
+                <div class="step-heading" style="font-size: 1rem; margin-bottom: 0.5rem;">Jenkins 构建链接（已完成编译）</div>
+                <div class="history-row">
+                  <span class="param-label">Release Jenkins 链接：</span>
+                  <input
+                    type="text"
+                    id="releaseJenkinsUrl"
+                    class="param-input"
+                    placeholder="https://jenkins.huami.com/job/.../123/"
+                    oninput="handleInputChange(this)"
+                  />
+                </div>
+                <div class="history-row">
+                  <span class="param-label">Debug Jenkins 链接：</span>
+                  <input
+                    type="text"
+                    id="debugJenkinsUrl"
+                    class="param-input"
+                    placeholder="https://jenkins.huami.com/job/.../124/"
+                    oninput="handleInputChange(this)"
+                  />
+                </div>
+              </div>
+              <div id="skipOptionsSection" class="mt-3 pt-3 border-t border-gray-200" style="display:none;">
+                <div class="text-sm text-gray-500 mb-2 font-medium">跳过指定阶段（可选）：</div>
+                <div class="grid grid-cols-3 gap-x-4 gap-y-1">
+                  <label class="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
+                    <input type="checkbox" id="skipDownload" /> --skip-download
+                  </label>
+                  <label class="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
+                    <input type="checkbox" id="skipPrepare" /> --skip-prepare
+                  </label>
+                  <label class="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
+                    <input type="checkbox" id="skipUpload" /> --skip-upload
+                  </label>
+                  <label class="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
+                    <input type="checkbox" id="skipShare" /> --skip-share
+                  </label>
+                  <label class="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
+                    <input type="checkbox" id="skipDoc" /> --skip-doc
+                  </label>
+                  <label class="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
+                    <input type="checkbox" id="skipFeishu" /> --skip-feishu
+                  </label>
+                </div>
+              </div>
+              <div id="versionErrorTip" class="error-tip">
+                版本号格式错误，例：1.0.0.0
+              </div>
+            </div>
+            <div class="mt-8 flex justify-between">
+              <button
+                onclick="prevStep()"
+                class="btn btn-secondary"
+              >
+                <i class="fa fa-arrow-left"></i> 返回上一步
+              </button>
+              <button
+                id="btnNextStep5"
+                onclick="nextStep5()"
+                class="btn btn-primary"
+              >
+                确认并下一步 <i class="fa fa-arrow-right"></i>
+              </button>
+              <button
+                id="btnDirectPipeline"
+                onclick="runDirectPipeline()"
+                class="btn btn-primary"
+                style="display:none; background: #E67E22;"
+              >
+                <i class="fa fa-play"></i> 开始预处理版本并生成文档
+              </button>
+            </div>
+            </div><!-- end tscanStep5NormalWrap -->
+          </div>
+
+          <!-- 第六步：编译参数 -->
+          <div id="form6" style="display: none">
+            <div class="history-wrap">
+              <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                <div class="history-row">
+                  <span class="history-label">设备平台：</span
+                  ><span id="buildStepPlatform" class="history-value">--</span>
+                </div>
+                <div class="history-row">
+                  <span class="history-label">目标项目：</span
+                  ><span id="buildStepDevice" class="history-value">--</span>
+                </div>
+                <div class="history-row">
+                  <span class="history-label">项目标识：</span
+                  ><span id="buildStepProjectId" class="history-value">--</span>
+                </div>
+                <div class="history-row">
+                  <span class="history-label">项目阶段：</span
+                  ><span id="buildStepProjectStage" class="history-value"
+                    >--</span
+                  >
+                </div>
+                <div class="history-row">
+                  <span class="history-label">版本号：</span
+                  ><span id="buildStepVersionNumber" class="history-value"
+                    >--</span
+                  >
+                </div>
+                <div class="history-row">
+                  <span class="history-label">发版分支：</span
+                  ><span id="buildStepPublishBranch" class="history-value"
+                    >--</span
+                  >
+                </div>
+                <div class="history-row md:col-span-2">
+                  <span class="history-label">版本文档名称：</span
+                  ><span id="buildStepDocName" class="history-value">--</span>
+                </div>
+                <div class="history-row md:col-span-2">
+                  <span class="history-label">Wiki Token：</span
+                  ><span id="buildStepWikiToken" class="history-value" style="color:#94a3b8;">--</span>
+                </div>
+              </div>
+              <div
+                id="buildStepHistDetailWrap"
+                class="mt-3 pt-3 border-t border-gray-200 hidden"
+              >
+                <div class="text-sm text-gray-500 mb-2 font-medium">
+                  历史版本详情
+                </div>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                  <div class="history-row">
+                    <span class="history-label">版本名称：</span
+                    ><span id="buildStepHistVariant" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">发版分支：</span
+                    ><span id="buildStepHistBranch" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">算法tag：</span
+                    ><span id="buildStepHistTagAlgo" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">Boot_Tag：</span
+                    ><span id="buildStepHistTagBoot" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">Recovery_Tag：</span
+                    ><span id="buildStepHistTagRecovery" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="history-row">
+                    <span class="history-label">Fct_Tag：</span
+                    ><span id="buildStepHistTagFct" class="history-value"
+                      >--</span
+                    >
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="step-heading">6. 构建参数配置</div>
+            <div class="space-y-4 mt-4">
+              <div class="build-card">
+                <div class="build-card-title">TAG 参数</div>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-4">
+                  <div>
+                    <div class="block text-sm text-gray-700 mb-1">
+                      <label for="tag_algo">算法 tag</label>
+                      <button onclick="openGerritBranchLog()" title="查看发版分支最新 tag" type="button"
+                        style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;color:#6b7280;cursor:pointer;padding:0;font-size:9px;vertical-align:middle;margin-left:4px;transition:all 0.15s;"
+                        onmouseover="this.style.background='#e5e7eb';this.style.color='#374151';this.style.borderColor='#9ca3af'"
+                        onmouseout="this.style.background='#f9fafb';this.style.color='#6b7280';this.style.borderColor='#d1d5db'"
+                      >
+                        <i class="fa fa-external-link"></i>
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      id="tag_algo"
+                      class="build-input"
+                      oninput="handleInputChange(this)"
+                    />
+                  </div>
+                  <div>
+                    <div class="block text-sm text-gray-700 mb-1">
+                      <label for="tag_boot">boot_tag</label>
+                      <button onclick="openGerritTagFilter('bootloader')" title="查看 bootloader tag" type="button"
+                        style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;color:#6b7280;cursor:pointer;padding:0;font-size:9px;vertical-align:middle;margin-left:4px;transition:all 0.15s;"
+                        onmouseover="this.style.background='#e5e7eb';this.style.color='#374151';this.style.borderColor='#9ca3af'"
+                        onmouseout="this.style.background='#f9fafb';this.style.color='#6b7280';this.style.borderColor='#d1d5db'"
+                      >
+                        <i class="fa fa-external-link"></i>
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      id="tag_boot"
+                      class="build-input"
+                      oninput="handleInputChange(this)"
+                    />
+                  </div>
+                  <div>
+                    <div class="block text-sm text-gray-700 mb-1">
+                      <label for="tag_recovery">recovery_tag</label>
+                      <button onclick="openGerritTagFilter('recovery')" title="查看 recovery tag" type="button"
+                        style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;color:#6b7280;cursor:pointer;padding:0;font-size:9px;vertical-align:middle;margin-left:4px;transition:all 0.15s;"
+                        onmouseover="this.style.background='#e5e7eb';this.style.color='#374151';this.style.borderColor='#9ca3af'"
+                        onmouseout="this.style.background='#f9fafb';this.style.color='#6b7280';this.style.borderColor='#d1d5db'"
+                      >
+                        <i class="fa fa-external-link"></i>
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      id="tag_recovery"
+                      class="build-input"
+                      oninput="handleInputChange(this)"
+                    />
+                  </div>
+                  <div>
+                    <div class="block text-sm text-gray-700 mb-1">
+                      <label for="tag_fct">fct_tag</label>
+                      <button onclick="openGerritTagFilter('fct')" title="查看 fct tag" type="button"
+                        style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;color:#6b7280;cursor:pointer;padding:0;font-size:9px;vertical-align:middle;margin-left:4px;transition:all 0.15s;"
+                        onmouseover="this.style.background='#e5e7eb';this.style.color='#374151';this.style.borderColor='#9ca3af'"
+                        onmouseout="this.style.background='#f9fafb';this.style.color='#6b7280';this.style.borderColor='#d1d5db'"
+                      >
+                        <i class="fa fa-external-link"></i>
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      id="tag_fct"
+                      class="build-input"
+                      oninput="handleInputChange(this)"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div class="build-card">
+                <div class="build-card-title">版本参数</div>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-4">
+                  <div>
+                    <label class="block text-sm text-gray-700 mb-1"
+                      >release 版本号</label
+                    >
+                    <input
+                      type="text"
+                      id="ver_release"
+                      class="build-input"
+                      oninput="handleInputChange(this);updateVersionModeHint()"
+                      onblur="checkThreePartVersionFormat('ver_release');updateVersionModeHint()"
+                    />
+                    <div id="ver_releaseErrorTip" class="error-tip">
+                      格式错误，例：1.3.0
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-sm text-gray-700 mb-1"
+                      >debug 版本号</label
+                    >
+                    <input
+                      type="text"
+                      id="ver_debug"
+                      class="build-input"
+                      oninput="handleInputChange(this);updateVersionModeHint()"
+                      onblur="checkThreePartVersionFormat('ver_debug');updateVersionModeHint()"
+                    />
+                    <div id="ver_debugErrorTip" class="error-tip">
+                      格式错误，例：1.3.0
+                    </div>
+                  </div>
+                  <div id="versionModeHint" class="md:col-span-2" style="margin-top:-0.5rem;font-size:0.75rem;color:#94a3b8;line-height:1.4;">
+                    <span id="versionModeHintText">Release 与 Debug 将同时触发构建（异步并行）。</span>
+                  </div>
+                  <div id="fwVerStrategyWrap" class="md:col-span-2 hidden">
+                    <label class="block text-sm text-gray-700 mb-1"
+                      >版本号校验策略 (默认：none)</label
+                    >
+                    <select
+                      id="fw_ver_strategy_env"
+                      class="custom-select"
+                      onchange="handleInputChange(this)"
+                    >
+                      <option value="none">none - 不进行版本号校验</option>
+                      <option value="legacy">
+                        legacy -
+                        校验VERSION_NAME前两位不大于OS_VERSION_MAJOR.MINOR
+                      </option>
+                      <option value="os_global">
+                        os_global - 用OS_VERSION_AB替换VERSION_NAME前两位
+                      </option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="build-card">
+                <div class="build-card-title">对比差分的版本信息</div>
+                <div class="grid grid-cols-1 gap-x-4 gap-y-4">
+                  <div>
+                    <div class="block text-sm text-gray-700 mb-1">
+                      <label for="diffVersionSelect">选择差分目标版本</label>
+                      <button onclick="window.open('https://devops.zepp.top/wtest/#/ci/log','_blank')" title="查看 CI 构建日志" type="button"
+                        style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;color:#6b7280;cursor:pointer;padding:0;font-size:9px;vertical-align:middle;margin-left:4px;transition:all 0.15s;"
+                        onmouseover="this.style.background='#e5e7eb';this.style.color='#374151';this.style.borderColor='#9ca3af'"
+                        onmouseout="this.style.background='#f9fafb';this.style.color='#6b7280';this.style.borderColor='#d1d5db'"
+                      >
+                        <i class="fa fa-external-link"></i>
+                      </button>
+                    </div>
+                    <select
+                      id="diffVersionSelect"
+                      class="custom-select"
+                      placeholder="请选择差分目标版本..."
+                    >
+                      <option value=""></option>
+                    </select>
+                    <div class="mt-2 text-sm text-gray-500">选择历史固件版本后自动填充 versionName 和 versionCode</div>
+                  </div>
+                </div>
+                <input type="hidden" id="diff_name" oninput="handleInputChange(this)" />
+                <input type="hidden" id="diff_code" oninput="handleInputChange(this)" />
+              </div>
+
+              <div class="build-card">
+                <div class="build-card-title">构建内容</div>
+                <div class="mb-2 text-sm text-gray-500">
+                  选择需要构建的内容（默认选中常用项）
+                </div>
+                <div id="buildContentCheckboxes" class="checkbox-group"></div>
+                <input
+                  type="hidden"
+                  id="build_content"
+                  oninput="handleInputChange(this)"
+                />
+                <div class="build-divider">
+                  <div class="checkbox-item">
+                    <input
+                      type="checkbox"
+                      id="build_tscan"
+                      onchange="handleInputChange(this)"
+                    />
+                    <label for="build_tscan">是否构建 TSCAN (默认：NO ，默认不选 则不构建)</label>
+                  </div>
+                  <div class="text-xs text-gray-400 ml-7" style="margin-top:-0.25rem;">
+                      默认NO ，则不构建； 一般 ota上线、封版版本会构建
+                  </div>
+                  <div class="checkbox-item mt-2">
+                    <input
+                      type="checkbox"
+                      id="auto_bind_after_upgrade"
+                      onchange="handleInputChange(this)"
+                    />
+                    <label for="auto_bind_after_upgrade"
+                      >是否需要 release 版本固件升级后自动绑定
+                    </label>
+                  </div>
+                  <div class="text-xs text-gray-400 ml-7" style="margin-top:-0.25rem;">
+                       默认NO， 无屏手环 stuttgart / toulouseh 需要自动绑定，建议勾选； 其他有屏设备建议不勾选
+                  </div>
+                  <div class="checkbox-item mt-2">
+                    <span class="text-sm text-gray-700 whitespace-nowrap">HMI_CORE_MM_OWNER_DEP：</span>
+                    <input
+                      type="number"
+                      id="hmi_core_mm_owner_dep"
+                      class="build-input build-input--inline"
+                      placeholder="2"
+                      min="1"
+                      step="1"
+                      oninput="handleInputChange(this)"
+                    />
+                  </div>
+                  <div class="text-xs text-gray-400 ml-7" style="margin-top:-0.25rem;">
+                       默认 2：release / debug 均为 2；设为其他值 N 时 release=N、debug=N×2（TSCAN 跟随 release）
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-8 flex justify-between">
+              <button
+                onclick="prevStep()"
+                class="btn btn-secondary"
+              >
+                <i class="fa fa-arrow-left"></i> 返回上一步
+              </button>
+              <button
+                onclick="nextStep6()"
+                class="btn btn-primary"
+              >
+                确认并下一步 <i class="fa fa-arrow-right"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- 第七步：确认发版 -->
+          <div id="form7" style="display: none">
+            <div class="step-heading">7. 配置确认</div>
+            <div class="space-y-6 mt-4">
+              <div class="step7-section">
+                <h3 class="step7-section-title">基础信息</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                  <div class="step7-item">
+                    <span class="step7-label">设备平台：</span
+                    ><span id="final7Platform" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">目标项目：</span
+                    ><span id="final7Device" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">功能入口：</span
+                    ><span id="final7PublishType" class="step7-value">--</span>
+                  </div>
+                  <div id="final7VersionWrap" class="step7-item hidden">
+                    <span class="step7-label">历史版本：</span
+                    ><span id="final7Version" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">项目标识：</span
+                    ><span id="final7ProjectId" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">项目阶段：</span
+                    ><span id="final7ProjectStage" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">版本号：</span
+                    ><span id="final7VersionNumber" class="step7-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">发版分支：</span
+                    ><span id="final7PublishBranch" class="step7-value"
+                      >--</span
+                    >
+                  </div>
+                  <div class="step7-item md:col-span-2">
+                    <span class="step7-label">版本文档名称：</span
+                    ><span id="final7DocName" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item md:col-span-2">
+                    <span class="step7-label">Wiki Token：</span
+                    ><span id="final7WikiToken" class="step7-value" style="color:#94a3b8;">--</span>
+                  </div>
+                </div>
+              </div>
+              <div class="step7-section">
+                <h3 class="step7-section-title">TAG 参数</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                  <div class="step7-item">
+                    <span class="step7-label">算法 tag：</span
+                    ><span id="final7TagAlgo" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">bootloader_tag：</span
+                    ><span id="final7TagBoot" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">recovery_tag：</span
+                    ><span id="final7TagRecovery" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">fct_tag：</span
+                    ><span id="final7TagFct" class="step7-value">--</span>
+                  </div>
+                </div>
+              </div>
+              <div class="step7-section">
+                <h3 class="step7-section-title">版本信息</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                  <div class="step7-item">
+                    <span class="step7-label">release 版本号：</span
+                    ><span id="final7VerRelease" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">debug 版本号：</span
+                    ><span id="final7VerDebug" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">fct 版本号：</span
+                    ><span id="final7VerFct" class="step7-value">--</span>
+                  </div>
+                  <div id="final7FwVerStrategyWrap" class="step7-item md:col-span-2 hidden">
+                    <span class="step7-label">版本号校验策略：</span
+                    ><span id="final7FwVerStrategyEnv" class="step7-value"
+                      >--</span
+                    >
+                  </div>
+                </div>
+              </div>
+              <div class="step7-section">
+                <h3 class="step7-section-title">差异参数</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                  <div class="step7-item">
+                    <span class="step7-label">差分目标版本号(VersionName):</span
+                    ><span id="final7DiffName" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">差分目标编号 (VersionCode):</span
+                    ><span id="final7DiffCode" class="step7-value">--</span>
+                  </div>
+                </div>
+              </div>
+              <div class="step7-section">
+                <h3 class="step7-section-title">构建内容</h3>
+                <div class="grid grid-cols-1 gap-y-2">
+                  <div class="step7-item">
+                    <span class="step7-label">构建内容：</span
+                    ><span id="final7BuildContent" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">是否构建 TSCAN：</span
+                    ><span id="final7BuildTscan" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label">升级后自动绑定：</span
+                    ><span id="final7AutoBind" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label step7-label--wide">release 版本：HMI_CORE_MM_OWNER_DEP =</span
+                    ><span id="final7HmiRelease" class="step7-value">--</span>
+                  </div>
+                  <div class="step7-item">
+                    <span class="step7-label step7-label--wide">debug 版本：HMI_CORE_MM_OWNER_DEP =</span
+                    ><span id="final7HmiDebug" class="step7-value">--</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="mt-8 flex justify-between">
+              <button
+                onclick="prevStep()"
+                class="btn btn-secondary"
+              >
+                <i class="fa fa-arrow-left"></i> 返回上一步
+              </button>
+              <button
+                onclick="nextStep7()"
+                class="btn btn-primary"
+              >
+                开始执行编译 <i class="fa fa-arrow-right"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- 第八步：编译进度 -->
+          <div id="form8" style="display: none">
+            <div class="step-heading">8. 版本编译执行</div>
+            <div class="flex gap-4">
+              <!-- 左侧任务列表 -->
+              <div class="w-56 flex-shrink-0">
+                <div class="build-card" style="padding:0.75rem;">
+                  <div class="text-sm font-semibold text-gray-700 mb-2 flex items-center justify-between">
+                    <span>任务列表</span>
+                    <button onclick="refreshTaskList()" class="text-xs text-gray-400 hover:text-primary" title="刷新">
+                      <i class="fa fa-refresh"></i>
+                    </button>
+                  </div>
+                  <div id="taskListSidebar" class="space-y-1 max-h-96 overflow-y-auto" style="max-height:28rem;">
+                    <div class="text-xs text-gray-400 text-center py-4">加载中...</div>
+                  </div>
+                </div>
+              </div>
+              <!-- 右侧主内容 -->
+              <div class="flex-1 min-w-0">
+                <div id="currentTaskTitle" class="text-sm text-gray-500 mb-2">--</div>
+                <div id="totalProgressWrap" class="mb-6">
+                  <div class="flex justify-between items-center mb-2">
+                    <span class="font-medium">总进度</span>
+                    <span id="totalPercentText" class="text-primary font-bold">0%</span>
+                  </div>
+                  <div class="total-progress-bar w-full">
+                    <div id="totalProgressBar" class="total-progress-fill" style="width: 0%"></div>
+                  </div>
+                </div>
+                <div id="compileStepsUI" class="flex items-center gap-2 mb-4"></div>
+                <!-- TSCAN 子任务进度 -->
+                <div id="tscanProgressSection" class="hidden mb-4 rounded-lg border border-blue-200 bg-blue-50 p-3 transition-all duration-300">
+                  <div class="flex items-center gap-2 mb-2">
+                    <i id="tscanStatusIcon" class="fa fa-cog fa-spin text-blue-500 text-sm"></i>
+                    <span class="font-medium text-sm text-gray-700">TSCAN 子任务</span>
+                    <span id="tscanStatusBadge" class="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-600">进行中</span>
+                  </div>
+                  <div id="tscanProgressSteps" class="flex items-center gap-2 text-xs text-gray-500">
+                    <span id="tscanStepBuild" class="tscan-step">触发构建</span>
+                    <span class="text-gray-300">→</span>
+                    <span id="tscanStepDownload" class="tscan-step">下载产物</span>
+                    <span class="text-gray-300">→</span>
+                    <span id="tscanStepUpload" class="tscan-step">上传NAS&amp;更新文档</span>
+                  </div>
+                  <div id="tscanMessage" class="text-xs text-gray-500 mt-1.5"></div>
+                </div>
+                <!-- TSCAN 构建结果卡片 -->
+                <div id="tscanResultCard" class="hidden mb-4 rounded-lg border-2 border-green-300 bg-green-50 p-4 transition-all duration-300">
+                  <div class="flex items-center gap-2 mb-2">
+                    <i class="fa fa-check-circle text-green-500"></i>
+                    <span id="tscanResultTitle" class="font-medium text-sm text-green-700">TSCAN 构建完成</span>
+                  </div>
+                  <div id="tscanResultBody" class="text-sm text-gray-600"></div>
+                </div>
+                <!-- 飞书差分报告结果展示区 -->
+                <div id="feishuLinkCard" class="hidden mb-4 rounded-lg border-2 p-4 transition-all duration-300">
+                  <div class="flex items-center gap-2 mb-2">
+                    <i id="feishuLinkIcon" class="fa fa-check-circle text-lg"></i>
+                    <span id="feishuLinkTitle" class="font-semibold text-sm"></span>
+                  </div>
+                  <a id="feishuLinkUrl" href="#" target="_blank" rel="noopener noreferrer" class="hidden inline-flex items-center gap-2 font-mono text-sm break-all">
+                    <i class="fa fa-external-link"></i>
+                    <span id="feishuLinkText"></span>
+                  </a>
+                  <p id="feishuNoLinkMsg" class="hidden text-sm"></p>
+                </div>
+                <div class="build-card">
+                  <div class="build-card-title">实时日志</div>
+                  <div id="compileLogBox" class="h-80 overflow-y-auto bg-gray-900 p-3 text-sm font-mono"></div>
+                </div>
+                <div class="mt-8 flex justify-end">
+                  <div class="flex gap-2">
+                    <button id="btnStopBuild" onclick="stopCurrentPhase()" class="btn btn-secondary text-red-500 hidden" title="终止版本编译">
+                      <i class="fa fa-stop"></i> 终止版本编译
+                    </button>
+                    <button id="btnStopPhase" onclick="stopCurrentPhase()" class="btn btn-secondary text-orange-400 hidden" title="终止当前阶段">
+                      <i class="fa fa-stop"></i> <span id="btnStopPhaseText">终止</span>
+                    </button>
+                    <button id="btnOpenJenkins" class="btn btn-secondary hidden" onclick="openJenkinsJob()" title="跳转到 Jenkins 任务页面">
+                      <i class="fa fa-external-link"></i> Jenkins
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧运维入口 -->
+    <div class="info-trigger" id="infoTrigger" title="关于工具与维护">
+      <i class="fa fa-info"></i>
+    </div>
+    <!-- 任务列表浮动按钮 -->
+    <div id="runningTaskBtn" class="running-task-btn hidden" title="查看任务列表（可拖拽移动）">
+      <i class="fa fa-tasks"></i>
+      <span id="runningTaskCount" class="running-task-count">0</span>
+    </div>
+
+    <!-- 运维信息弹窗 -->
+    <div class="info-overlay" id="infoOverlay">
+      <div class="info-modal">
+        <button class="info-close" id="infoClose">&times;</button>
+        <div class="info-modal-header">
+          <div class="info-modal-icon"><i class="fa fa-cog"></i></div>
+          <h3>关于工具与维护</h3>
+        </div>
+        <div class="info-modal-body">
+          <div class="info-item">
+            <div class="info-item-icon"><i class="fa fa-wrench"></i></div>
+            <div class="info-item-content">
+              <div class="info-item-label">工具用途</div>
+              <div class="info-item-text">固件发版一站式工具：基于选择不同平台对应的不同项目、填写关键参数，一键触发 Jenkins 自动编译，产物自动上传 NAS 并生成飞书版本文档。支持历史版本复用  以及版本差分Changelog、Tscan 的快捷触发。</div>
+            </div>
+          </div>
+          <div class="info-item">
+            <div class="info-item-icon"><i class="fa fa-building-o"></i></div>
+            <div class="info-item-content">
+              <div class="info-item-label">部门</div>
+              <div class="info-item-text">青春手表事业部 · 软件部 · 应用开发组</div>
+            </div>
+          </div>
+          <div class="info-item">
+            <div class="info-item-icon"><i class="fa fa-user-o"></i></div>
+            <div class="info-item-content">
+              <div class="info-item-label">开发/维护</div>
+              <div class="info-item-text">郭启发</div>
+            </div>
+          </div>
+          <div class="info-item">
+            <div class="info-item-icon"><i class="fa fa-comment-o"></i></div>
+            <div class="info-item-content">
+              <div class="info-item-label">备注</div>
+              <div class="info-item-text">如遇问题 / 优化建议请及时反馈</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 数据统计弹窗 -->
+    <div id="statsOverlay" class="login-overlay hidden" style="z-index:400">
+      <div class="login-modal" style="max-width:56rem;max-height:85vh;overflow-y:auto">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+          <h3 style="font-size:1.2rem;font-weight:700;color:#374151">📊 使用统计</h3>
+          <button onclick="closeStatsModal()" style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:#9ca3af">&times;</button>
+        </div>
+        <div id="statsSummary" style="display:flex;gap:1rem;margin-bottom:1.5rem;flex-wrap:wrap"></div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+            <thead>
+              <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb">
+                <th style="padding:0.5rem 0.75rem;text-align:left;color:#6b7280">操作人</th>
+                <th style="padding:0.5rem 0.75rem;text-align:left;color:#6b7280">操作内容</th>
+                <th style="padding:0.5rem 0.75rem;text-align:left;color:#6b7280">设备</th>
+                <th style="padding:0.5rem 0.75rem;text-align:left;color:#6b7280">时间</th>
+              </tr>
+            </thead>
+            <tbody id="statsEventsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Jenkins 登录弹框 -->
+    <div id="loginOverlay" class="login-overlay hidden">
+      <div class="login-modal">
+        <h3 class="login-modal-title"><i class="fa fa-lock"></i> Jenkins 账号登录</h3>
+        <p class="login-modal-desc">使用你的 Jenkins 账号密码登录，用于触发编译任务</p>
+        <div class="space-y-3">
+          <div>
+            <label class="block text-sm text-gray-700 mb-1">账号</label>
+            <input id="loginUserInput" type="text" class="login-input" placeholder="Jenkins 用户名" />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-700 mb-1">密码 / Token</label>
+            <input id="loginTokenInput" type="password" class="login-input" placeholder="密码或 API Token" />
+          </div>
+          <div id="loginError" class="text-red-500 text-sm hidden"></div>
+          <button onclick="doLogin()" class="btn btn-primary w-full">登录</button>
+          <button onclick="hideLoginModal()" class="btn btn-secondary w-full" id="loginCancelBtn">取消</button>
+        </div>
+      </div>
+    </div>
+
+  </body>
+</html>

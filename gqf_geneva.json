@@ -1,0 +1,317 @@
+{
+  "changelog": {
+    "enabled": true,
+    "jenkins_job_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT",
+    "block_until_ready": true,
+    "params": {
+      "PRODUCTION": "${release.project}",
+      "BEFORE_VERSION_NAME": "${vars.prev_version_name}",
+      "BEFORE_VERSION_CODE": "${vars.prev_version_code}",
+      "AFTER_VERSION_NAME": "${release.version}",
+      "AFTER_VERSION_CODE": "",
+      "MANIFEST_FILE": "${release.project}.xml",
+      "AFTER_MANIFEST_TAG": "${vars.tag}",
+      "DIFF_COMPARE_SKIP_JIRA": "YES"
+    },
+    "build_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT/4142/",
+    "build_number": 4142,
+    "status": "queued",
+    "result": "",
+    "triggered_at": "20260811_201947",
+    "updated_at": "20260811_201947"
+  },
+  "jenkins": {
+    "base_url": "https://jenkins.huami.com",
+    "timeout_sec": 600,
+    "auth": {
+      "type": "basic",
+      "username": "cs-guoqifa",
+      "password": ""
+    },
+    "triggers": {
+      "auto_run_pipeline": true,
+      "pipeline_args": [],
+      "release": {
+        "parameters": {
+          "PRODUCT": "${release.project}",
+          "TAG_NAME": "${vars.tag}",
+          "BOOT_TAG_NAME": "${vars.boot_tag}",
+          "RECOVERY_TAG_NAME": "${vars.recovery_tag}",
+          "FCT_TAG_NAME": "${vars.fct_tag}",
+          "BUILD_MODE": "${vars.build_mode}",
+          "BUILD_TEST_TOOL": "是",
+          "VERSION_NAME": "${vars.release_version_name}",
+          "FCT_VERSION_NAME": "${vars.fct_version_name}",
+          "BUILD_RELEASE": "release",
+          "AUTH_CFG_AUTO_BINDING": "NO",
+          "FW_VER_STRATEGY_ENV": "none"
+        }
+      },
+      "debug": {
+        "parameters": {
+          "PRODUCT": "${release.project}",
+          "TAG_NAME": "${vars.tag}",
+          "BOOT_TAG_NAME": "${vars.boot_tag}",
+          "RECOVERY_TAG_NAME": "${vars.recovery_tag}",
+          "FCT_TAG_NAME": "${vars.fct_tag}",
+          "BUILD_MODE": "OTA,BOOT,RECOVERY",
+          "VERSION_NAME": "${vars.debug_version_name}",
+          "FCT_VERSION_NAME": "${vars.fct_version_name}",
+          "BUILD_RELEASE": "debug"
+        }
+      },
+      "Tscan": {
+        "parameters": {
+          "PRODUCT": "${release.project}",
+          "TAG_NAME": "${vars.tag}",
+          "BOOT_TAG_NAME": "${vars.boot_tag}",
+          "RECOVERY_TAG_NAME": "${vars.recovery_tag}",
+          "FCT_TAG_NAME": "${vars.fct_tag}",
+          "BUILD_MODE": "OTA,BOOT,RECOVERY",
+          "VERSION_NAME": "${vars.debug_version_name}",
+          "FCT_VERSION_NAME": "${vars.fct_version_name}",
+          "TSCANCODE_CHECK": "YES",
+          "BUILD_RELEASE": "debug"
+        }
+      },
+      "job_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/",
+      "modes": "async"
+    },
+    "builds": {
+      "debug": {
+        "download": {
+          "mode": "artifacts",
+          "include_globs": [
+            "**/*"
+          ],
+          "exclude_globs": [
+            "**/*.log"
+          ],
+          "output_dir": "work/download/${release.project}_debug",
+          "overwrite": true
+        },
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/6278/"
+      },
+      "release": {
+        "download": {
+          "mode": "artifacts",
+          "include_globs": [
+            "**/*"
+          ],
+          "exclude_globs": [
+            "**/*.log"
+          ],
+          "output_dir": "work/download/${release.project}_release",
+          "overwrite": true
+        },
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/6277/"
+      },
+      "tscan": {
+        "download": {
+          "mode": "artifacts",
+          "include_globs": [
+            "**/*"
+          ],
+          "exclude_globs": [
+            "**/*.log"
+          ],
+          "output_dir": "work/download/${release.project}_tscan",
+          "overwrite": true
+        },
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/6279/"
+      }
+    }
+  },
+  "prepare": {
+    "mode": "placeholders_dsl",
+    "placeholders_config": "placeholders.default.json",
+    "workspace_dir": "work/prepare",
+    "clean": true,
+    "notes": "Release: 按规则解压提取 watch@mhs003.elf + watch@mhs003_ota_sign.zip，生成 staging 目录后再上传。"
+  },
+  "nas": {
+    "webdav": {
+      "base_url": "https://10.2.100.85:5006",
+      "verify_tls": false,
+      "timeout_sec": 1800,
+      "auth": {
+        "username": "cs-guoqifa",
+        "password": ""
+      }
+    },
+    "dsm": {
+      "base_url": "https://10.2.100.85:5001",
+      "verify_tls": false,
+      "auth": {
+        "username": "cs-guoqifa",
+        "password": ""
+      }
+    },
+    "remote": {
+      "folder_name": "${release.variant}",
+      "path_strategy": "base_plus_folder",
+      "base_dir": "/GT智能手表事业部/软件部/软件版本文档/Geneva/用户固件"
+    },
+    "transport_method": "webdav",
+    "smb_share": "",
+    "uploads": [
+      {
+        "name": "debug",
+        "remote_subdir": "Monkey",
+        "local_dir": "work/download/${release.project}_debug",
+        "include_globs": [
+          "**/*"
+        ],
+        "exclude_globs": [],
+        "overwrite": true
+      },
+      {
+        "name": "release",
+        "remote_subdir": "Release",
+        "local_dir": "work/download/${release.project}_release",
+        "extra_local_dirs": [
+          "${prepare.workspace_dir}/upload_payload"
+        ],
+        "include_globs": [
+          "**/*"
+        ],
+        "exclude_globs": [],
+        "overwrite": true
+      },
+      {
+        "name": "tscan",
+        "remote_subdir": "Monkey",
+        "local_dir": "work/download/${release.project}_tscan",
+        "include_globs": [
+          "**/*"
+        ],
+        "exclude_globs": [],
+        "overwrite": true
+      }
+    ]
+  },
+  "doc": {
+    "enabled": true,
+    "output_dir": "output/${release.project}",
+    "filename_template": "{project}_{version}_{timestamp}_版本文档.md"
+  },
+  "notifications": {
+    "webhook": {
+      "enabled": true,
+      "url": "",
+      "verify_tls": true,
+      "timeout_sec": 10,
+      "on_success": true,
+      "on_failure": true,
+      "on_progress": true,
+      "print_response": false,
+      "payload_by_event": {
+        "download_start": {
+          "text": "开始下载(${runtime.extra.run_name})\nBuild: ${runtime.extra.build_url}\nOut: ${runtime.extra.out_dir}"
+        },
+        "failed": {
+          "text": "${release.device_name} ${release.stage} ${release.version} 流程失败\n原因: ${runtime.message}\n耗时: ${runtime.duration_sec}s\nRelease: ${jenkins.builds.release.build_url}\nDebug: ${jenkins.builds.debug.build_url}\nFeishu: ${runtime.extra.feishu_url}"
+        }
+      },
+      "payload": {
+        "text": "${release.device_name} ${release.stage} ${release.version} 打包完成\n耗时: ${runtime.duration_sec}s\nRelease: ${jenkins.builds.release.build_url}\nDebug: ${jenkins.builds.debug.build_url}\nFeishu: ${runtime.extra.feishu_url}"
+      }
+    }
+  },
+  "llm": {
+    "provider": "deepseek",
+    "api_key": "",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "api_url": "https://api.deepseek.com/v1/chat/completions",
+    "model": "deepseek-chat",
+    "enabled": true,
+    "temperature": 0,
+    "max_tokens": 512,
+    "timeout_sec": 10,
+    "note": "当 key 为空时优先读环境变量 DEEPSEEK_API_KEY；enabled=false 则关闭 AI 意图识别，仅走正则匹配"
+  },
+  "feishu": {
+    "enabled": true,
+    "use_wiki": true,
+    "notification_chat_id": "ou_c474b58039a2f78230e8f73a594b6171",
+    "notification_cc_open_ids": [
+      "ou_c474b58039a2f78230e8f73a594b6171"
+    ],
+    "wiki_copy_only": true,
+    "docx_replace_placeholders": true,
+    "docx_replace_only": true,
+    "print_placeholder_mapping": true,
+    "user_access_token": "",
+    "user_access_token_env": "FEISHU_USER_ACCESS_TOKEN",
+    "user_refresh_token": "",
+    "user_refresh_token_env": "FEISHU_USER_REFRESH_TOKEN",
+    "user_access_token_expires_at": 1779363795,
+    "user_refresh_token_expires_at": 1781948595,
+    "oauth": {
+      "enabled": true,
+      "app_id": "cli_a92812f1c1f9dbb5",
+      "app_secret": "",
+      "redirect_uri": "http://localhost:8000/callback",
+      "scopes": "wiki:wiki wiki:node:read wiki:node:copy docx:document drive:drive docs:document:copy docs:document:read docs:document:write offline_access",
+      "open_browser": true,
+      "timeout_sec": 300,
+      "token_timeout_sec": 30,
+      "refresh_skew_sec": 300,
+      "auto_save_user_access_token": true,
+      "auto_oauth_on_99991677": true,
+      "auto_refresh_user_token_on_expiry": true
+    },
+    "template_file_token": "https://zepp.feishu.cn/docx/OS8jdJlizofcfoxVnGpcwWhUnrd",
+    "target_space_id": "7314496431711469596",
+    "target_parent_token": "",
+    "template_page_id": "",
+    "docx_target_folder_token": "https://zepp.feishu.cn/drive/folder/IVTMfaylGlQZLodrAjCcOGhQnEe",
+    "docx_allow_create_fallback": true,
+    "docx_domain": "",
+    "admin_email": "",
+    "share_admin_perm": "full_access",
+    "share_file_type": "docx",
+    "name_template": "{{REL_DEVICE_NAME}} {{REL_STAGE}} v{{REL_VERSION}} {{REL_DATE}}",
+    "placeholder_overrides": {
+      "{{REL_BOOTLOADER_MANIFEST_INFO}}": "",
+      "{{REL_RECOVERY_MANIFEST_INFO}}": "",
+      "{{REL_BUILD_LOG_FILE}}": "",
+      "{{REL_TSCAN_BOOT}}": "",
+      "{{REL_TSCAN_OTA}}": "",
+      "{{REL_TSCAN_RECOVERY}}": ""
+    },
+    "parent_block_id": "",
+    "insert_index": -1,
+    "timeout_sec": 30,
+    "debug_dump_response": false,
+    "user_token_saved_at": 1778472214,
+    "template_node_token": "RzHFw5ipYiU5ibkMxSfcgUfDnve",
+    "notification_open_id": "ou_784eb1795cc4a1016603b6f3cc66ada1"
+  },
+  "release": {
+    "project": "geneva",
+    "device_name": "geneva",
+    "stage": "ota4 第六轮",
+    "version": "3.20.0.1",
+    "variant": "geneva ota4 第六轮 v3.20.0.1",
+    "notes": "releases/geneva/ota",
+    "xml_name": "geneva",
+    "operator": "u_mr49a060_s93dtw"
+  },
+  "vars": {
+    "tag": "geneva_26/7/30",
+    "boot_tag": "geneva-bootloader-1.1.2",
+    "recovery_tag": "geneva-recovery-1.1.2",
+    "fct_tag": "geneva-dvt_fct",
+    "release_version_name": "3.20.0",
+    "debug_version_name": "3.20.1",
+    "fct_version_name": "3.20.0",
+    "prev_version_name": "3.19.0.2",
+    "prev_version_code": "202608070932",
+    "build_mode": "OTA,OTA_SLEEP,FCT,BOOT,RECOVERY",
+    "fw_ver_strategy_env": "none",
+    "build_tscan": "yes",
+    "auto_bind_after_upgrade": "no"
+  },
+  "platform_select": "mhs003"
+}

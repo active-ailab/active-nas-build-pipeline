@@ -1,0 +1,59 @@
+{
+  "base_config": "common.json",
+  "release": {
+    "project": "pamir_64m",
+    "device_name": "pamir_64m",
+    "stage": "MP4（二供Nand验证）",
+    "version": "3.19.0.3",
+    "variant": "Pamir(64M) MP4（二供Nand验证） 版本 v3.19.0.3",
+    "notes": ""
+  },
+  "vars": {
+    "tag": "pamir_mp4_nand_t1",
+    "boot_tag": "pamir-bootloader-2.0.6",
+    "recovery_tag": "pamir-bootloader-2.0.6",
+    "fct_tag": "pamir-fct-1.8.0",
+    "release_version_name": "3.19.0",
+    "debug_version_name": "3.19.1",
+    "fct_version_name": "1.9.1",
+    "prev_version_name": "3.19.0.2",
+    "prev_version_code": "202603041607",
+    "build_mode": "OTA,OTA_SLEEP,FCT,BOOT,RECOVERY"
+  },
+  "changelog": {
+    "jenkins_job_url": "",
+    "build_url": "",
+    "build_number": 0,
+    "status": "",
+    "result": "",
+    "triggered_at": "",
+    "updated_at": ""
+  },
+  "jenkins": {
+    "triggers": {
+      "job_url": "",
+      "release": {
+        "parameters": {
+          "AUTH_CFG_AUTO_BINDING": "",
+          "FW_VER_STRATEGY_ENV": ""
+        }
+      }
+    },
+    "builds": {
+      "debug": {
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/4866/"
+      },
+      "release": {
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/4865/"
+      }
+    }
+  },
+  "nas": {
+    "remote": {
+      "base_dir": "/GT智能手表事业部/软件部/软件版本文档/Pamir/用户固件"
+    }
+  },
+  "feishu": {
+    "template_node_token": "WxDvwNErQilq4GkYC4hctB1Kndd"
+  }
+}
