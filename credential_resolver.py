@@ -15,6 +15,7 @@
 """
 
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # ── 环境变量映射表 ──────────────────────────────────
@@ -138,3 +139,50 @@ def sanitize_config_for_display(cfg: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
     return safe
+
+
+def load_dotenv(path=None, *, override: bool = False) -> bool:
+    """极简 .env 加载（零第三方依赖）。
+
+    把 .env 文件中的 `KEY=VALUE` 注入 `os.environ`，供 `resolve_*` 系列函数读取。
+
+    Args:
+        path: .env 文件路径。为 None 时依次尝试：
+              1) 当前工作目录下的 `.env`
+              2) 本文件所在目录（项目根）下的 `.env`
+        override: 为 True 时覆盖已存在的环境变量；默认 False（setdefault 语义）。
+
+    支持：`#` 注释、空行、`KEY=VALUE`、`KEY="VALUE"`、`KEY='VALUE'`（值可含 =）。
+    """
+    if path is None:
+        candidates = [
+            Path.cwd() / ".env",
+            Path(__file__).resolve().parent / ".env",
+        ]
+        path = next((p for p in candidates if p.exists()), None)
+        if path is None:
+            return False
+
+    env_path = Path(path)
+    if not env_path.exists() or not env_path.is_file():
+        return False
+
+    loaded = 0
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        if not key:
+            continue
+        if override or os.environ.get(key) is None:
+            os.environ[key] = value
+            loaded += 1
+
+    return loaded > 0

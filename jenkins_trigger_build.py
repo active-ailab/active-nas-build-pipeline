@@ -216,7 +216,13 @@ def _get_webhook_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     wh = notif.get("webhook")
     if not isinstance(wh, dict):
-        return {}
+        wh = {}
+    # env 兜底：配置里 url 为空时，回退到环境变量 FEISHU_WEBHOOK_URL
+    if not str(wh.get("url") or "").strip():
+        env_url = os.environ.get("FEISHU_WEBHOOK_URL", "").strip()
+        if env_url:
+            wh = dict(wh)
+            wh["url"] = env_url
     return wh
 
 
@@ -1833,4 +1839,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from credential_resolver import load_dotenv
+    load_dotenv()
     raise SystemExit(main())

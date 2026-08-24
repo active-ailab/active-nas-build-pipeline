@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # NAS 固件发布自动化流水线
 
 > 华米 Zepp 智能手表固件：从 CI 构建到飞书文档交付的一站式 DevOps 自动化系统。
@@ -58,6 +57,37 @@ python lark_release.py setup
 lark-cli auth login --domain wiki docs im drive base
 ```
 
+### 凭证配置（运行前必读）
+
+本项目所有真实凭证（Jenkins / NAS 密码、飞书 App Secret、DeepSeek API Key、飞书 Webhook）**已从 `*.json` 配置中移除**，统一通过环境变量注入，不会随代码提交。
+
+首次运行前，必须先在项目根目录创建 `.env` 文件：
+
+```powershell
+# 1. 复制模板生成 .env（在项目根目录执行）
+copy .env.example .env
+
+# 2. 用编辑器打开 .env，把每项 CHANGE_ME 替换成真实凭证
+```
+
+`.env` 里需要填写的变量：
+
+| 变量 | 用途 |
+|---|---|
+| `JENKINS_PASSWORD` | Jenkins 登录密码 |
+| `NAS_WEBDAV_PASSWORD` | NAS WebDAV 密码 |
+| `NAS_DSM_PASSWORD` | NAS DSM 密码 |
+| `FEISHU_APP_SECRET` | 飞书应用 App Secret |
+| `FEISHU_WEBHOOK_URL` | 飞书 Flow 通知 webhook 地址 |
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 |
+
+`.env` 放在项目根目录（与 `lark_release.py` 同级），启动任一脚本时会自动读取并注入环境变量。
+
+> **重要说明：**
+> - `.env` 已被 `.gitignore` 忽略，**不会**进入 git 仓库，切勿把真实凭证提交进去。
+> - 没有 `.env` 时运行会因缺少凭证报错（如 `Missing credential` / `LarkCliError`）。
+> - `.env` 通过私密渠道（如飞书私聊）分发给需要的同事；NAS 账号仅部分同事有权限，无权限者需向负责人索取 `.env`。
+
 ### 运行发布
 
 ```powershell
@@ -115,7 +145,7 @@ MHS003S 平台：oslo
 - **`common.json`** —— 所有项目共享的公共配置（Jenkins / NAS / 飞书 / LLM / Webhook）。
 - **`gqf_<项目>.json`** —— 设备独立配置（设备名、版本号、Tag、分支等），通过 `base_config` 继承 common.json。
 
-凭证通过 `credential_resolver.py` 统一解析，支持 `${ENV:VARNAME}` 占位符，优先读环境变量，回退到配置值。
+凭证通过 `credential_resolver.py` 统一解析，支持 `${ENV:VARNAME}` 占位符，优先读环境变量，回退到配置值。真实凭证存放于 `.env`（见上方「凭证配置」）。
 
 ## 文档索引
 
@@ -130,51 +160,6 @@ MHS003S 平台：oslo
 
 ## 注意事项
 
-- 敏感凭证（Jenkins/NAS 密码、飞书 secret、API key）会随配置文件提交，请确认仓库访问权限可控。
+- 敏感凭证（Jenkins/NAS 密码、飞书 secret、API key）已外置到 `.env`，**不再随代码提交**，见「凭证配置」。
 - 飞书 user token 为个人凭证、会过期，团队成员需各自执行 `lark-cli auth login` 授权。
 - 运行时产物（`work/`、`output/`、`*.bak.*` 等）已通过 `.gitignore` 排除，不入库。
-=======
-# active-nas-build-pipeline
-
-## 项目简介
-
-该仓库名称表明其目标可能与 NAS 构建流水线有关，但以当前 `main` 分支的实际内容为准，仓库中**只有一个 GitHub Actions 飞书通知工作流**，尚未包含任何 NAS 构建、上传、分发、调度、配置、脚本或 README 文档。
-
-因此，当前仓库更准确的定位是：**一个尚未放入业务实现的占位仓库**。
-
-## 当前已存在的功能
-
-- 在向 `main` 或 `master` 分支推送时触发通知。
-- 支持在 GitHub Actions 页面手动触发通知。
-- 复用 `active-ailab/skills-manifest/.github/workflows/reusable-feishu-notify.yml@main` 发送飞书变更消息。
-
-## 适用场景
-
-当前版本只能用于仓库变更通知，不能直接承担 NAS 构建流水线任务。若后续要承载真实流水线，应在本仓库补充：
-
-- 构建入口脚本
-- NAS 上传/下载逻辑
-- 配置文件与环境变量说明
-- 使用文档与验证步骤
-
-## 目录结构
-
-```text
-active-nas-build-pipeline/
-└── .github/
-    └── workflows/
-        └── feishu-notify.yml
-```
-
-## 使用方法
-
-当前没有可执行的 NAS pipeline 命令。现阶段仅可：
-
-- 推送代码到 `main` / `master`，触发飞书通知；
-- 在 GitHub Actions 页面手动运行 `Feishu Notify`。
-
-## 注意事项
-
-- 不应根据仓库名推断这里已经有 NAS 构建逻辑；当前代码并没有。
-- 若后续补充真正的流水线实现，应同步更新本 README，避免误导使用者。
->>>>>>> fbd7fc1fb1a2cf3a898f1d0afb86e1cb2d340141

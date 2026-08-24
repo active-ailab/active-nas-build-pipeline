@@ -394,4 +394,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from credential_resolver import load_dotenv
+    load_dotenv()
     raise SystemExit(main())

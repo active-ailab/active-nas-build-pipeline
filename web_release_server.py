@@ -4361,7 +4361,7 @@ def _notify_changelog_done(task: dict, feishu_link: str):
         common_cfg = json.loads((SCRIPT_DIR / "common.json").read_text(encoding="utf-8"))
         wh = (common_cfg.get("notifications") or {}).get("webhook") or {}
         if wh.get("enabled"):
-            wh_url = str(wh.get("url") or "").strip()
+            wh_url = str(os.environ.get("FEISHU_WEBHOOK_URL", "") or wh.get("url") or "").strip()
             if wh_url:
                 payload = {"text": text}
                 print(f"[ChangelogNotify] Sending webhook: {wh_url}")
@@ -4534,6 +4534,8 @@ def main():
 
 
 if __name__ == "__main__":
+    from credential_resolver import load_dotenv
+    load_dotenv()
     try:
         main()
     except Exception as e:
