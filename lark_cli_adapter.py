@@ -346,10 +346,12 @@ def _get_tenant_token(*, oauth_cfg: Optional[Dict[str, str]] = None) -> str:
     import os as _os
     app_id = _os.environ.get("FEISHU_APP_ID", "").strip()
     app_secret = _os.environ.get("FEISHU_APP_SECRET", "").strip()
-    # 环境变量未设置时，尝试从配置文件读取
-    if not app_id and oauth_cfg and isinstance(oauth_cfg, dict):
-        app_id = str(oauth_cfg.get("app_id") or "").strip()
-        app_secret = str(oauth_cfg.get("app_secret") or "").strip()
+    # 环境变量未设置时，各自独立地从配置文件回退（避免 app_id 缺失时连带覆盖 app_secret）
+    if oauth_cfg and isinstance(oauth_cfg, dict):
+        if not app_id:
+            app_id = str(oauth_cfg.get("app_id") or "").strip()
+        if not app_secret:
+            app_secret = str(oauth_cfg.get("app_secret") or "").strip()
     # 环境变量与配置均未提供时，直接报错，不再回退到硬编码默认值（避免凭证泄露）
     if not app_id or not app_secret:
         raise LarkCliError("Missing FEISHU_APP_ID/FEISHU_APP_SECRET (set env or config feishu.oauth)")
