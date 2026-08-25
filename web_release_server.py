@@ -1551,10 +1551,15 @@ def _do_trigger_changelog(chat_id, device, params):
         if auth.get("username") and auth.get("token"):
             jenkins_auth = {"username": auth["username"], "password": auth["token"]}
 
+        # MANIFEST_FILE 去 _64m/_32/_64 后缀（milan_64m→milan.xml、pamir_64m→pamir.xml、rome_64m→rome.xml）
+        xml_name = str((cfg.get("release") or {}).get("xml_name") or "").strip()
+        if not xml_name:
+            xml_name = re.sub(r"_\d+m?$", "", str(device or "").strip())
+
         _feishu_reply_message(chat_id, f"🔄 正在触发 **{device}** Changelog：`{prev_name}`(`{prev_code}`) → `{curr_name}`(`{curr_code}`)...")
         with app.test_client() as client:
             resp = client.post(f"/api/projects/{device}/start-changelog", json={
-                "device": device, "manifest": f"{device}.xml",
+                "device": device, "manifest": f"{xml_name}.xml",
                 "prev_version_name": prev_name, "prev_version_code": prev_code,
                 "curr_version_name": curr_name, "curr_version_code": curr_code,
                 "tag": tag, "user_id": f"feishu_bot_{chat_id}", "jenkins_auth": jenkins_auth,
@@ -4041,7 +4046,8 @@ def api_start_changelog(project: str):
         return jsonify({"ok": False, "error": "Invalid JSON"}), 400
 
     device = (form_data.get("device") or project).strip()
-    manifest = (form_data.get("manifest") or f"{device}.xml").strip()
+    # MANIFEST_FILE 去 _64m/_32/_64 后缀（milan_64m→milan.xml、pamir_64m→pamir.xml、rome_64m→rome.xml）
+    manifest = (form_data.get("manifest") or f"{re.sub(r'_\d+m?$', '', device)}.xml").strip()
     prev_ver_name = (form_data.get("prev_version_name") or "").strip()
     prev_ver_code = (form_data.get("prev_version_code") or "").strip()
     curr_ver_name = (form_data.get("curr_version_name") or "").strip()

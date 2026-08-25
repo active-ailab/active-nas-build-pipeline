@@ -3531,6 +3531,16 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                     return "", True
             except Exception:
                 pass
+            # build 已结束（building=false）就立即退出，不再空转到超时
+            try:
+                _api_url = f"{job_url_base.rstrip('/')}/{build_number}/api/json"
+                _req2 = _Req(_api_url, headers={"Authorization": f"Basic {auth_str}"})
+                with op.open(_req2, timeout=30) as _resp2:
+                    _data = json.loads(_resp2.read().decode(errors="replace"))
+                if not bool(_data.get("building", False)):
+                    return "", False
+            except Exception:
+                pass
             if int(timeout_sec) > 0 and (_t.time() - start) >= int(timeout_sec):
                 break
             _t.sleep(5)
@@ -3660,6 +3670,17 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
         
         val_expanded = re.sub(r"\$\{([^}]+)\}", _replacer, val_raw)
         expanded_params[key_str] = val_expanded
+
+    # 特殊处理：CMP-JIRA-GIT 差分的 MANIFEST_FILE 去 _64m/_32/_64 后缀。
+    # milan_64m / pamir_64m 应传 milan.xml / pamir.xml，而非 milan_64m.xml / pamir_64m.xml。
+    if "MANIFEST_FILE" in expanded_params:
+        rel_for_manifest = cfg.get("release") or {}
+        xml_name = str(rel_for_manifest.get("xml_name") or "").strip()
+        if not xml_name:
+            project = str(rel_for_manifest.get("project") or "").strip()
+            xml_name = re.sub(r"_\d+m?$", "", project)
+        if xml_name:
+            expanded_params["MANIFEST_FILE"] = f"{xml_name}.xml"
     
     # Get Jenkins auth from config
     j_auth = (cfg.get("jenkins") or {}).get("auth") or {}

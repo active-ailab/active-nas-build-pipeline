@@ -118,6 +118,23 @@ def _expand_jenkins_params(
     return expanded_params
 
 
+def _normalize_changelog_manifest_file(params: Dict[str, Any], cfg: Dict[str, Any]) -> None:
+    """CMP-JIRA-GIT 差分的 MANIFEST_FILE 去 _64m/_32/_64 后缀。
+
+    milan_64m / pamir_64m 应传 milan.xml / pamir.xml，而不是 milan_64m.xml / pamir_64m.xml。
+    优先用 release.xml_name，缺失则用 release.project 去 `_数字[m]` 尾缀（与 web 端 xml_name 规则一致）。
+    """
+    if "MANIFEST_FILE" not in params:
+        return
+    rel = cfg.get("release") or {}
+    xml_name = str(rel.get("xml_name") or "").strip()
+    if not xml_name:
+        project = str(rel.get("project") or "").strip()
+        xml_name = re.sub(r"_\d+m?$", "", project)
+    if xml_name:
+        params["MANIFEST_FILE"] = f"{xml_name}.xml"
+
+
 def _set_by_path(obj: Dict[str, Any], dotted: str, value: Any) -> None:
     parts = dotted.split(".")
     cur: Any = obj
@@ -880,6 +897,7 @@ def _maybe_trigger_changelog_async(
     if not isinstance(raw_params, dict):
         raw_params = {}
     params = _expand_jenkins_params(raw_params=raw_params, full_cfg=cfg)
+    _normalize_changelog_manifest_file(params, cfg)
 
     print("\n== Changelog: trigger asynchronously ==")
     try:
