@@ -1828,7 +1828,7 @@ async function startChangelogBuild() {
 
   const payload = {
     device: device,
-    manifest: device + '.xml',
+    manifest: device.replace(/_\d+m?$/, '') + '.xml',
     prev_version_name: clPrevData.versionName,
     prev_version_code: clPrevData.versionCode,
     curr_version_name: clCurrData.versionName,
