@@ -4391,7 +4391,7 @@ class SynologyDsmClient:
             "version": "6",
             "method": "logout",
             "session": session,
-            "_sid": self._sid,
+            "_sid": f'"{self._sid}"',
         }
         url = f"{self._base_url}/webapi/auth.cgi?{urllib.parse.urlencode(params)}"
         _ = self._request_json(url)
@@ -4407,7 +4407,10 @@ class SynologyDsmClient:
             "version": "3",
             "method": "create",
             "path": path,
-            "_sid": self._sid,
+            # DSM 已知坑：login 返回的 sid 可能以数字开头，此时 _sid 若不加双引号，
+            # DSM 端会将其误判为数字导致 session 匹配失败（error code 119 "SID not found"）。
+            # 用双引号包裹后 urlencode 会变成 %22...%22，DSM 解码得到带引号的 JSON 字符串，可正确识别。
+            "_sid": f'"{self._sid}"',
         }
         url = f"{self._base_url}/webapi/entry.cgi?{urllib.parse.urlencode(params)}"
         data = self._request_json(url)
