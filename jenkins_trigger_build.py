@@ -671,6 +671,7 @@ def _poll_build_results(
     request_timeout_sec: int,
     opener: Optional[urllib.request.OpenerDirector],
     on_build_finished: Optional[Callable[[str, int, str, str], None]] = None,
+    max_poll_errors: int = 5,
 ) -> Dict[str, str]:
     """Poll multiple builds until each has finished.
 
@@ -690,6 +691,7 @@ def _poll_build_results(
     start = time.time()
     results: Dict[str, str] = {}
     last_states: Dict[str, str] = {}
+    consecutive_errors: Dict[str, int] = {}
 
     while pending:
         if time.time() - start > build_timeout_sec:
@@ -702,7 +704,20 @@ def _poll_build_results(
         heartbeat: Dict[str, str] = {}
         for run_name, (num, build_url) in pending.items():
             url = build_url.rstrip("/") + "/api/json"
-            resp = _request_json(method="GET", url=url, headers=headers, timeout_sec=request_timeout_sec, opener=opener)
+            try:
+                resp = _request_json(method="GET", url=url, headers=headers, timeout_sec=request_timeout_sec, opener=opener)
+            except (urllib.error.URLError, OSError) as e:
+                # 瞬时网络抖动（如 WinError 10060 连接超时）不应终止整条流水线；
+                # 仅记录 WARN 并重试，连续失败达到阈值才真正抛出。
+                consecutive_errors[run_name] = consecutive_errors.get(run_name, 0) + 1
+                n = consecutive_errors[run_name]
+                print(f"WARN: poll {run_name} #{num} failed ({n}/{max_poll_errors}): {e}", file=sys.stderr)
+                if n >= max_poll_errors:
+                    raise
+                heartbeat[run_name] = "retrying"
+                continue
+
+            consecutive_errors[run_name] = 0
 
             building = bool(resp.get("building"))
             result = str(resp.get("result") or "").strip()
