@@ -655,6 +655,15 @@ def _process_pipeline_line(task_id: str, line: str):
         _push_log(task_id, '>>> 分享链接生成完成，开始生成飞书版本文档 ...')
         _go(IDX_FS, 80)
 
+    # -- 检测飞书 Wiki 授权失败 --
+    if 'Wiki 失败:' in clean and '未授权 wiki' in clean:
+        if not task.get("wiki_failed"):
+            task["wiki_failed"] = True
+            if task.get("task_type") == "skip_jenkins":
+                _push_log(task_id, '⚠️ 检测到飞书 Wiki 授权失败，将在流程结束后自动重试 ...')
+            else:
+                _push_log(task_id, '⚠️ 检测到飞书 Wiki 授权失败（完整流程不自动重试，可手动走"直接生成文档"）...')
+
     # -- Pipeline 结束 --
     if 'Pipeline complete' in clean:
         for s in steps: s["status"] = "success"; s["percent"] = 100
@@ -2942,6 +2951,7 @@ def api_release(project: str):
                 "--pipeline-subcommand", "run",
                 "--no-backup",
             ]
+            _prewarm_lark_auth(task_id)
             _push_log(task_id, f"Running: {' '.join(cmd)}")
 
             # 使用 Popen 实时捕获输出，而不是 run()
@@ -3040,25 +3050,44 @@ def api_release(project: str):
     })
 
 
-@app.route("/api/projects/<project>/run-pipeline-direct", methods=["POST"])
-def api_run_pipeline_direct(project: str):
-    """跳过 Jenkins 触发，直接用已有的 Jenkins build URL 跑下载→上传→文档流水线。
-    支持可选 tscan_jenkins_url 用于 TSCAN 产物下载。"""
-    try:
-        form_data = request.get_json(force=True)
-    except Exception:
-        return jsonify({"ok": False, "error": "Invalid JSON body"}), 400
+def _prewarm_lark_auth(task_id: str) -> bool:
+    """预热 lark-cli 登录态（wiki 域），避免流水线末端 Wiki 复制时 auth 降级为机器人身份。
 
+    背景：流水线跑在独立子进程里，飞书登录态是"惰性"的——只有跑到"复制 Wiki"
+    那一步才会检查/刷新 lark-cli auth。提前在此预热，可把磁盘上的登录态刷新好，
+    后续子进程 auth status 直接通过，不再降级为 tenant_access_token（机器人无 wiki 权限）。
+
+    返回是否就绪；False 仅告警，不阻塞任务启动。
+    """
+    try:
+        from lark_cli_adapter import lark_auth_ensure
+        _push_log(task_id, '>>> 预热飞书登录态（lark-cli wiki 域）...')
+        ok = lark_auth_ensure(domain="wiki", silent=True)
+        if ok:
+            _push_log(task_id, '    ✓ 飞书登录态就绪')
+        else:
+            _push_log(task_id, '    ⚠️ 飞书登录态预热未就绪，后续 Wiki 复制可能降级/失败')
+        return ok
+    except Exception as e:
+        _push_log(task_id, f'    ⚠️ 飞书登录态预热跳过: {e}')
+        return False
+
+
+def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: int = 0):
+    """跳过 Jenkins 触发，直接用已有的 Jenkins build URL 跑下载→上传→文档流水线。
+    支持可选 tscan_jenkins_url 用于 TSCAN 产物下载。
+    被 api_run_pipeline_direct 和飞书 Wiki 授权失败自动重试逻辑共用。
+    _wiki_retry_count: 飞书 Wiki 自动重试计数（>0 表示已是重试任务，不再触发重试）。"""
     release_url = (form_data.get("release_jenkins_url") or "").strip()
     debug_url = (form_data.get("debug_jenkins_url") or "").strip()
     tscan_url = (form_data.get("tscan_jenkins_url") or "").strip()
     if not release_url or not debug_url:
-        return jsonify({"ok": False, "error": "release_jenkins_url 和 debug_jenkins_url 都是必填"}), 400
+        raise ValueError("release_jenkins_url 和 debug_jenkins_url 都是必填")
 
     release_info = form_data.get("release", {})
     vars_info = form_data.get("vars", {})
     if not release_info.get("version"):
-        return jsonify({"ok": False, "error": "version 是必填字段"}), 400
+        raise ValueError("version 是必填字段")
 
     # 使用 template 作为基础，合并用户数据
     base_cfg = _build_new_project_template(project)
@@ -3207,6 +3236,9 @@ def api_run_pipeline_direct(project: str):
             {"name": "分享链接", "status": sh_status, "percent": sh_pct},
             {"name": "生成飞书文档", "status": fs_status, "percent": fs_pct},
         ],
+        # 飞书 Wiki 授权失败自动重试相关字段（下划线开头，不落盘 running_tasks.json）
+        "wiki_failed": False,
+        "wiki_retry_count": _wiki_retry_count,
     }
 
     def _run_pipeline_direct():
@@ -3223,6 +3255,8 @@ def api_run_pipeline_direct(project: str):
             if skip_flags.get("skip_share"): cmd.append("--skip-share")
             if skip_flags.get("skip_doc"): cmd.append("--skip-doc")
             if skip_flags.get("skip_feishu"): cmd.append("--skip-feishu")
+            if not skip_flags.get("skip_feishu"):
+                _prewarm_lark_auth(task_id)
             _push_log(task_id, f"Running: {' '.join(cmd)}")
             skip_list = [k for k, v in skip_flags.items() if v]
             skip_msg = f"（跳过: {', '.join(skip_list)}）" if skip_list else ""
@@ -3277,6 +3311,27 @@ def api_run_pipeline_direct(project: str):
                         _save_user_feishu_token(user_id, updated_cfg)
                     except Exception:
                         pass
+                # ── 自动重试：飞书 Wiki 授权失败时再跑一次"直接生成文档" ──
+                if (_running_tasks[task_id].get("wiki_failed")
+                        and _running_tasks[task_id].get("wiki_retry_count", 0) < 1):
+                    _push_log(task_id, '')
+                    _push_log(task_id, '>>> 检测到飞书 Wiki 授权失败，自动重试"直接生成文档"（重试 1/1）...')
+                    _push_log(task_id, '    等待 8 秒让飞书会话刷新 ...')
+                    time.sleep(8)
+                    try:
+                        new_resp = _launch_skip_jenkins_task(
+                            form_data, project,
+                            _wiki_retry_count=_running_tasks[task_id].get("wiki_retry_count", 0) + 1,
+                        )
+                        new_task_id = ""
+                        try:
+                            new_task_id = (new_resp.get_json() or {}).get("task_id", "")
+                        except Exception:
+                            pass
+                        _running_tasks[task_id]["wiki_retried_task_id"] = new_task_id
+                        _push_log(task_id, f'    重试任务已启动: {new_task_id}（飞书文档生成结果请在新任务查看）')
+                    except Exception as e:
+                        _push_log(task_id, f'❌ 自动重试失败: {e}')
             else:
                 if _running_tasks[task_id].get("status") != "terminated":
                     for s in _running_tasks[task_id]["steps"]:
@@ -3326,6 +3381,19 @@ def api_run_pipeline_direct(project: str):
         "config_file": str(cfg_path),
         "message": "pipeline 已在后台启动（跳过 Jenkins 触发，不修改项目配置）",
     })
+
+
+@app.route("/api/projects/<project>/run-pipeline-direct", methods=["POST"])
+def api_run_pipeline_direct(project: str):
+    """跳过 Jenkins 触发，直接用已有的 Jenkins build URL 跑下载→上传→文档流水线。"""
+    try:
+        form_data = request.get_json(force=True)
+    except Exception:
+        return jsonify({"ok": False, "error": "Invalid JSON body"}), 400
+    try:
+        return _launch_skip_jenkins_task(form_data, project)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
 
 @app.route("/api/projects/<project>/tscan-only", methods=["POST"])
