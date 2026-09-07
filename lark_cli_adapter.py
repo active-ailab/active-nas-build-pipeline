@@ -490,8 +490,54 @@ def lark_send_message(*, chat_id: str = "", markdown: str = "", silent: bool = F
 # ── 多维表格 ──
 
 def lark_base_upsert_record(*, base_token: str, table_id: str, record: Dict[str, Any]) -> bool:
+    """直写多维表格记录（不依赖 lark-cli，使用 tenant_access_token 的 Bot 身份）。
+
+    适用场景：lark-cli 暂未重新登录 / 切到不同 app，但 .env 里的 app_id/app_secret 对应的 Bot
+    已在多维表格有编辑权限。需要 user 身份时改调 lark_base_upsert_record_via_lark()。
+    """
+    from release_pipeline_run import _feishu_get_tenant_access_token_internal, _feishu_resolve_app_id, _feishu_resolve_app_secret  # type: ignore
+    try:
+        oauth_cfg: Dict[str, Any] = {}
+        try:
+            import os as _os
+            oauth_cfg = {
+                "app_id": _os.environ.get("FEISHU_APP_ID", "").strip(),
+                "app_secret": _os.environ.get("FEISHU_APP_SECRET", "").strip(),
+            }
+        except Exception:
+            pass
+        app_id = _feishu_resolve_app_id(oauth_cfg)
+        app_secret = _feishu_resolve_app_secret(oauth_cfg)
+        if not app_id or not app_secret:
+            print("WARN: 多维表格直写跳过: FEISHU_APP_ID/FEISHU_APP_SECRET 未配置", file=sys.stderr)
+            return False
+        token, _ = _feishu_get_tenant_access_token_internal(
+            app_id=app_id, app_secret=app_secret, timeout_sec=10)
+
+        import json as _json, urllib.request as _ur
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/records?user_id_type=open_id"
+        body = _json.dumps({"fields": record}, ensure_ascii=False).encode("utf-8")
+        req = _ur.Request(url, data=body, method="POST")
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("Content-Type", "application/json; charset=utf-8")
+        with _ur.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = _json.loads(raw)
+        if data.get("code") == 0:
+            rec = (data.get("data") or {}).get("record") or {}
+            print(f"  ✓ 多维表格记录已追加 (record_id={rec.get('record_id', '')[:16]}…)")
+            return True
+        print(f"WARN: 多维表格直写失败 code={data.get('code')} msg={data.get('msg', 'unknown')[:200]}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"WARN: 多维表格直写异常: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
+
+
+def lark_base_upsert_record_via_lark(*, base_token: str, table_id: str, record: Dict[str, Any]) -> bool:
+    """走 lark-cli 的多维表格写入（需要 lark-cli 已用对的目标 app 完成 user 登录）。"""
     if not lark_auth_ensure(domain="base", silent=True):
-        print("WARN: 多维表格未授权", file=sys.stderr); return False
+        print("WARN: 多维表格未授权 (lark-cli base domain)", file=sys.stderr); return False
     try:
         _run([
             "base", "+record-upsert",
@@ -500,7 +546,7 @@ def lark_base_upsert_record(*, base_token: str, table_id: str, record: Dict[str,
         ], timeout_sec=30)
         return True
     except LarkCliError as e:
-        print(f"WARN: 多维表格写入失败: {e}", file=sys.stderr); return False
+        print(f"WARN: 多维表格 lark-cli 写入失败: {e}", file=sys.stderr); return False
 
 
 # ── 一键发布 ──
@@ -602,16 +648,25 @@ def lark_publish_release_document(
     # ── 多维表格 ──
     if base_config:
         rec = dict(base_config.get("record", {}))
+        doc_field = str(base_config.get("doc_field") or "飞书文档").strip() or "飞书文档"
         if res.doc_url:
-            rec.setdefault("飞书文档", res.doc_url)
+            rec.setdefault(doc_field, res.doc_url)
         elif res.wiki_url:
-            rec.setdefault("飞书文档", res.wiki_url)
+            rec.setdefault(doc_field, res.wiki_url)
+        as_user = bool(base_config.get("as_user", False))
         try:
-            res.base_record_added = lark_base_upsert_record(
-                base_token=base_config["base_token"],
-                table_id=base_config["table_id"],
-                record=rec,
-            )
+            if as_user:
+                res.base_record_added = lark_base_upsert_record_via_lark(
+                    base_token=base_config["base_token"],
+                    table_id=base_config["table_id"],
+                    record=rec,
+                )
+            else:
+                res.base_record_added = lark_base_upsert_record(
+                    base_token=base_config["base_token"],
+                    table_id=base_config["table_id"],
+                    record=rec,
+                )
             if res.base_record_added:
                 print("  已追加多维表格记录")
         except LarkCliError as e:

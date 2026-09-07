@@ -186,7 +186,7 @@
   },
   "notifications": {
     "webhook": {
-      "enabled": true,
+      "enabled": false,
       "url": "",
       "verify_tls": true,
       "timeout_sec": 10,
@@ -194,6 +194,7 @@
       "on_failure": true,
       "on_progress": true,
       "print_response": false,
+      "note": "2026-09-07: webhook 链路被 Base workflow 假成功坑, 已禁用并切换到多维表格 (feishu.base) 直写",
       "payload_by_event": {
         "download_start": {
           "text": "开始下载(${runtime.extra.run_name})\nBuild: ${runtime.extra.build_url}\nOut: ${runtime.extra.out_dir}"
@@ -222,7 +223,7 @@
   "feishu": {
     "enabled": true,
     "use_wiki": true,
-    "notification_chat_id": "oc_15bd1c246dac2f39ea2dcabc714854f7",
+    "notification_chat_id": "oc_242ad25668ef6b86b6b06d7b6f13bcfd",
     "notification_cc_open_ids": [],
     "wiki_copy_only": true,
     "docx_replace_placeholders": true,
@@ -271,6 +272,26 @@
     "insert_index": -1,
     "timeout_sec": 30,
     "debug_dump_response": false,
-    "user_token_saved_at": 1779356895
+    "user_token_saved_at": 1779356895,
+    "_base_template_note": "【2026-09-07 改造】旧 webhook (Base workflow) 假成功, 改为 lark_base_upsert_record 直写多维表格记录。需在 .env 注入 base_token/table_id, 并把 enabled 设为 true。",
+    "base": {
+      "enabled": true,
+      "base_token": "RQTfbINKyaHqPNsCdYgcvinynie",
+      "table_id": "tbl41VQXnLgM48ry",
+      "domain": "https://open.feishu.cn",
+      "use_bot_identity": true,
+      "as_user": false,
+      "user_open_id": "",
+      "fields": {
+        "项目": "项目",
+        "版本": "版本",
+        "阶段": "阶段",
+        "环节": "环节",
+        "状态": "状态",
+        "发布时间": "发布时间",
+        "飞书文档": "飞书文档"
+      },
+      "_field_note": "左=本系统内字段名, 右=多维表格里的列名 (需在飞书侧先建好同名/同语义的列)。环节流水由 feishu_base_notifier.notify_stage() 逐环节追加一行"
+    }
   }
 }

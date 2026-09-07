@@ -58,6 +58,21 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 from config_loader import read_json_with_base
 
+try:  # 多维表格「环节流水」通知，缺失时不阻断流水线
+    from feishu_base_notifier import notify_stage as _base_notify_stage
+except Exception:  # pragma: no cover
+    _base_notify_stage = None
+
+
+def _notify_base_stage(cfg: Dict[str, Any], stage: str, status: str) -> None:
+    """写一条环节流水到多维表格（best-effort，失败只打 WARN）。"""
+    if _base_notify_stage is None:
+        return
+    try:
+        _base_notify_stage(cfg=cfg, stage=stage, status=status)
+    except Exception as e:
+        print(f"WARN: [多维表格] {stage}/{status} 写入异常: {type(e).__name__}: {e}", file=sys.stderr)
+
 
 @dataclass(frozen=True)
 class JenkinsAuth:
@@ -1469,6 +1484,7 @@ def main() -> int:
                                 request_timeout_sec=int(args.request_timeout_sec),
                             )
                             _send_bot_notification(cfg=cfg, text=f"✅ [{hdr}] 编译完成：{run_name} #{bn} [{result}]\n{str(bu)}")
+                            _notify_base_stage(cfg, "编译", "成功")
                         # Trigger changelog after release success (sync mode)
                         try:
                             _maybe_trigger_changelog_async(
@@ -1572,6 +1588,7 @@ def main() -> int:
                 request_timeout_sec=int(args.request_timeout_sec),
             )
             _send_bot_notification(cfg=cfg, text=text)
+            _notify_base_stage(cfg, "编译", "进行中")
 
         def _notify_finished(run_name: str, num: int, build_url: str, result: str) -> None:
             header = _build_project_header(cfg)
@@ -1583,6 +1600,7 @@ def main() -> int:
                 request_timeout_sec=int(args.request_timeout_sec),
             )
             _send_bot_notification(cfg=cfg, text=text)
+            _notify_base_stage(cfg, "编译", "成功" if result.upper() == "SUCCESS" else "失败")
 
         builds: Dict[str, Tuple[int, str]] = {}
         results: Dict[str, str] = {}
@@ -1845,6 +1863,7 @@ def main() -> int:
                 request_timeout_sec=int(args.request_timeout_sec),
             )
             _send_bot_notification(cfg=cfg, text=f"🚀 [{hdr}] 流水线启动")
+            _notify_base_stage(cfg, "打包流水线", "进行中")
 
             p = subprocess.run(cmd)
             if int(p.returncode) != 0:
@@ -1854,6 +1873,7 @@ def main() -> int:
                     request_timeout_sec=int(args.request_timeout_sec),
                 )
                 _send_bot_notification(cfg=cfg, text=f"❌ [{hdr}] 流水线失败: exit_code={int(p.returncode)}")
+                _notify_base_stage(cfg, "打包流水线", "失败")
                 raise RuntimeError(f"release_pipeline_run.py failed with exit code {p.returncode}")
 
             _maybe_notify_webhook_text(
@@ -1861,6 +1881,7 @@ def main() -> int:
                 text=f"[{hdr}] Release pipeline finished: exit_code=0",
                 request_timeout_sec=int(args.request_timeout_sec),
             )
+            _notify_base_stage(cfg, "打包流水线", "成功")
         else:
             print("\nPipeline auto-run is disabled; not running release pipeline.")
 

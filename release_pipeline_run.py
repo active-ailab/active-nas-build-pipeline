@@ -47,6 +47,22 @@ try:
     _LARK_CLI_AVAILABLE = True
 except ImportError as _e:
     _LARK_CLI_AVAILABLE = False
+
+# ── 多维表格「环节流水」通知 ──
+try:
+    from feishu_base_notifier import notify_stage as _base_notify_stage
+except Exception:  # pragma: no cover
+    _base_notify_stage = None
+
+
+def _notify_base_stage(cfg: Dict[str, Any], stage: str, status: str, doc_url: str = "") -> None:
+    """写一条环节流水到多维表格（best-effort，失败只打 WARN，绝不中断流水线）。"""
+    if _base_notify_stage is None:
+        return
+    try:
+        _base_notify_stage(cfg=cfg, stage=stage, status=status, doc_url=doc_url)
+    except Exception as e:
+        print(f"WARN: [多维表格] {stage}/{status} 写入异常: {type(e).__name__}: {e}", file=sys.stderr)
     LarkCliError = RuntimeError  # type: ignore
 
 def _http_json(
@@ -145,7 +161,9 @@ def _feishu_notify_user(*, chat_id: str, markdown: str, feishu_cfg: Dict[str, An
         app_id = _feishu_resolve_app_id(oauth_cfg)
         app_secret = _feishu_resolve_app_secret(oauth_cfg)
         if not app_id or not app_secret:
-            return  # 静默跳过，webhook 已处理主通知
+            print(f"[Notify] Bot skipped: feishu.oauth.app_id/app_secret not set "
+                  f"(set env FEISHU_APP_ID/FEISHU_APP_SECRET or feishu.oauth.* in cfg)", file=sys.stderr)
+            return
         token, _ = _feishu_get_tenant_access_token_internal(
             app_id=app_id, app_secret=app_secret, timeout_sec=10)
         content = json.dumps({"text": markdown}, ensure_ascii=False)
@@ -163,10 +181,10 @@ def _feishu_notify_user(*, chat_id: str, markdown: str, feishu_cfg: Dict[str, An
         if resp_data.get("code") == 0:
             print(f"[Notify] Bot message sent to {receive_id_type}={chat_id}")
         else:
-            # Bot notification is best-effort; webhook handles main notification.
-            print(f"[Notify] Bot message skipped: {resp_data.get('msg', 'unknown')[:200]}", file=sys.stderr)
-    except Exception:
-        pass  # 静默降级，不影响管道完整性
+            print(f"[Notify] Bot send FAILED to {receive_id_type}={chat_id}: "
+                  f"code={resp_data.get('code')} msg={resp_data.get('msg', 'unknown')[:200]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[Notify] Bot send EXCEPTION to {chat_id}: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -5321,6 +5339,10 @@ def main() -> int:
                 chat_id = str(feishu_cfg.get("notification_open_id") or "").strip()
             if chat_id:
                 _feishu_notify_user(chat_id=chat_id, markdown=direct_text, feishu_cfg=feishu_cfg)
+            else:
+                print("[Notify] Bot skipped: no chat_id resolved "
+                      f"(operator_open_id={operator_open_id!r}, operator={operator!r}, "
+                      f"notification_chat_id={feishu_cfg.get('notification_chat_id')!r})", file=sys.stderr)
 
             # 2) 抄送给管理员（去重）
             cc_ids = feishu_cfg.get("notification_cc_open_ids") or []
@@ -5329,9 +5351,11 @@ def main() -> int:
                     cc_id_str = str(cc_id).strip()
                     if cc_id_str and cc_id_str != chat_id:
                         _feishu_notify_user(chat_id=cc_id_str, markdown=cc_text, feishu_cfg=feishu_cfg)
-        except Exception:
-            # Bot notification is best-effort
-            pass
+        except Exception as e:
+            # Bot notification is best-effort; log failure for visibility
+            print(f"[Notify] Final bot notification EXCEPTION: {type(e).__name__}: {e}", file=sys.stderr)
+
+        _notify_base_stage(cfg, "发布完成", "成功" if int(exit_code) == 0 else "失败")
 
         print("\nPipeline complete.")
         return int(exit_code)
@@ -5341,6 +5365,10 @@ def main() -> int:
     for u in (cfg.get("nas", {}).get("uploads") or []):
         if isinstance(u, dict) and u.get("name"):
             uploads_by_name[str(u["name"])] = u
+
+    # 多维表格流水：release/debug 会各跑一次 run_one，但表里没有「构建名」列，
+    # 只在最后一个 build 完成时记一行，避免重复行。
+    _last_build = "release" if args.only in ("all", "release") else "debug"
 
     def run_one(name: str) -> None:
         _run_t0 = time.time()
@@ -5370,6 +5398,9 @@ def main() -> int:
             )
         else:
             print("Skip Jenkins download.")
+
+        if name == _last_build:
+            _notify_base_stage(cfg, "下载", "跳过" if args.skip_download else "成功")
 
         # DSL prepare (per-run): execute only steps matching this run name.
         if not args.skip_prepare and prepare_mode.strip().lower() in ("placeholders_dsl", "dsl"):
@@ -5469,6 +5500,10 @@ def main() -> int:
                             )
                     except Exception as e:
                         print(f"WARN: share link generation (skip-upload mode) failed: {e}", file=sys.stderr)
+
+            if name == _last_build:
+                _notify_base_stage(cfg, "上传", "跳过")
+                _notify_base_stage(cfg, "分享", "跳过" if (args.dry_run or args.skip_share) else "成功")
 
             run_summaries.append(
                 {
@@ -5716,6 +5751,10 @@ def main() -> int:
                     except Exception:
                         pass
 
+        _notify_base_stage_for = name == _last_build
+        if _notify_base_stage_for:
+            _notify_base_stage(cfg, "上传", "成功")
+
         remote_dir = (remote_variant_base.rstrip("/") + "/" + remote_subdir.strip("/")).rstrip("/")
         share_links_main: Dict[str, str] = {}
         share_links_extra: Dict[str, Dict[str, str]] = {}
@@ -5759,6 +5798,9 @@ def main() -> int:
                         "not the WebDAV-only account. Configure nas.dsm.auth.* or env DSM_PASSWORD.",
                         file=sys.stderr,
                     )
+
+        if _notify_base_stage_for:
+            _notify_base_stage(cfg, "分享", "跳过" if (args.dry_run or args.skip_share) else "成功")
 
         _run_elapsed = time.time() - _run_t0
         print(f"run_one({name}): total {_run_elapsed:.1f}s")
@@ -5893,6 +5935,7 @@ def main() -> int:
         doc_path.write_text(md, encoding="utf-8")
         print(f"\nVersion doc generated: {doc_path}")
         local_doc_status = str(doc_path)
+        _notify_base_stage(cfg, "版本文档", "成功")
     else:
         if args.skip_doc:
             local_doc_status = "skipped (--skip-doc)"
@@ -5900,6 +5943,7 @@ def main() -> int:
             local_doc_status = "disabled"
         else:
             local_doc_status = "skipped"
+        _notify_base_stage(cfg, "版本文档", "跳过")
 
     # ═══════════════════════════════════════════════════════════════
     # Generate Feishu cloud doc via Lark CLI adapter
@@ -5980,19 +6024,9 @@ def main() -> int:
                 }
 
             # 多维表格配置
+            # 注：2026-09-07 起环节流水统一由 feishu_base_notifier.notify_stage() 逐环节追加，
+            # 这里不再传 base_config（否则会多出一行没有「环节/状态」的残缺记录）。
             base_config: Optional[Dict[str, Any]] = None
-            base_cfg = feishu_cfg.get("base")
-            if isinstance(base_cfg, dict) and base_cfg.get("enabled"):
-                base_config = {
-                    "base_token": str(base_cfg.get("base_token") or "").strip(),
-                    "table_id": str(base_cfg.get("table_id") or "").strip(),
-                    "record": {
-                        "项目": str(release_cfg_fei.get("project") or ""),
-                        "版本": str(release_cfg_fei.get("version") or ""),
-                        "阶段": str(release_cfg_fei.get("stage") or ""),
-                        "发布时间": _now.strftime("%Y-%m-%d %H:%M"),
-                    },
-                }
 
             # 通知群聊
             notification_chat_id = str(feishu_cfg.get("notification_chat_id") or "").strip() or None
@@ -6013,6 +6047,10 @@ def main() -> int:
 
             feishu_final_url = result.doc_url or result.wiki_url or ""
             feishu_status = result.to_status_text()
+            if feishu_final_url:
+                _notify_base_stage(cfg, "飞书文档", "成功", doc_url=feishu_final_url)
+            else:
+                _notify_base_stage(cfg, "飞书文档", "失败")
 
     else:
         if not feishu_enabled:
@@ -6021,6 +6059,7 @@ def main() -> int:
             feishu_status = "skipped (--skip-feishu)"
         elif args.dry_run:
             feishu_status = "skipped (dry-run)"
+        _notify_base_stage(cfg, "飞书文档", "跳过")
 
     return _finalize(0)
 

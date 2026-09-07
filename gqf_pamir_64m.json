@@ -229,7 +229,7 @@
   "feishu": {
     "enabled": true,
     "use_wiki": true,
-    "notification_chat_id": "oc_15bd1c246dac2f39ea2dcabc714854f7",
+    "notification_chat_id": "oc_242ad25668ef6b86b6b06d7b6f13bcfd",
     "notification_cc_open_ids": [],
     "wiki_copy_only": true,
     "docx_replace_placeholders": true,
@@ -280,7 +280,26 @@
     "debug_dump_response": false,
     "user_token_saved_at": 1779356895,
     "template_node_token": "WxDvwNErQilq4GkYC4hctB1Kndd",
-    "notification_open_id": "ou_784eb1795cc4a1016603b6f3cc66ada1"
+    "notification_open_id": "ou_784eb1795cc4a1016603b6f3cc66ada1",
+    "base": {
+      "enabled": true,
+      "base_token": "RQTfbINKyaHqPNsCdYgcvinynie",
+      "table_id": "tbl41VQXnLgM48ry",
+      "domain": "https://open.feishu.cn",
+      "use_bot_identity": true,
+      "as_user": false,
+      "user_open_id": "",
+      "fields": {
+        "项目": "项目",
+        "版本": "版本",
+        "阶段": "阶段",
+        "环节": "环节",
+        "状态": "状态",
+        "发布时间": "发布时间",
+        "飞书文档": "飞书文档"
+      },
+      "_field_note": "左=本系统内字段名, 右=多维表格里的列名。环节流水由 feishu_base_notifier.notify_stage() 逐环节追加一行"
+    }
   },
   "release": {
     "project": "pamir_64m",
