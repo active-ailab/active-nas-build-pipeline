@@ -595,6 +595,7 @@ function nextStep3() {
     // 显示跳过指定阶段
     const skipSection = document.getElementById('skipOptionsSection');
     if (skipSection) skipSection.style.display = 'block';
+    updateJenkinsUrlPlaceholder();
     const btnNext = document.getElementById('btnNextStep5');
     if (btnNext) btnNext.style.display = 'none';
     const btnDirect = document.getElementById('btnDirectPipeline');
@@ -2349,6 +2350,23 @@ function fillHistoryVersionDetail(prefix) {
 }
 
 // ================== 跳过 Jenkins 编译 → 直接跑 Pipeline ==================
+// 当 --skip-download / --skip-prepare / --skip-upload 三个都勾选时，Jenkins 链接可不填
+function skipJenkinsUrlOptional() {
+  const skipDownload = document.getElementById('skipDownload')?.checked || false;
+  const skipPrepare = document.getElementById('skipPrepare')?.checked || false;
+  const skipUpload = document.getElementById('skipUpload')?.checked || false;
+  return skipDownload && skipPrepare && skipUpload;
+}
+
+function updateJenkinsUrlPlaceholder() {
+  const optional = skipJenkinsUrlOptional();
+  const hint = '--skip-download --skip-prepare --skip-upload 情况下，该 Jenkins 链接可不填';
+  const releaseEl = document.getElementById('releaseJenkinsUrl');
+  const debugEl = document.getElementById('debugJenkinsUrl');
+  if (releaseEl) releaseEl.placeholder = optional ? hint : 'https://jenkins.huami.com/job/.../123/';
+  if (debugEl) debugEl.placeholder = optional ? hint : 'https://jenkins.huami.com/job/.../124/';
+}
+
 async function runDirectPipeline() {
   // 验证 Jenkins 登录
   if (!getJenkinsAuth()) {
@@ -2369,8 +2387,10 @@ async function runDirectPipeline() {
 
   const releaseUrl = document.getElementById('releaseJenkinsUrl')?.value.trim() || '';
   const debugUrl = document.getElementById('debugJenkinsUrl')?.value.trim() || '';
-  if (!releaseUrl) { alert('请填写 Release Jenkins 链接'); return; }
-  if (!debugUrl) { alert('请填写 Debug Jenkins 链接'); return; }
+  if (!skipJenkinsUrlOptional()) {
+    if (!releaseUrl) { alert('请填写 Release Jenkins 链接'); return; }
+    if (!debugUrl) { alert('请填写 Debug Jenkins 链接'); return; }
+  }
 
   // 收集构建参数（与 nextStep7 一致）
   const tag_algo = document.getElementById('tag_algo')?.value.trim() || '';

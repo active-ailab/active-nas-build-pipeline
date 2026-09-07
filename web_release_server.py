@@ -3081,7 +3081,14 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     release_url = (form_data.get("release_jenkins_url") or "").strip()
     debug_url = (form_data.get("debug_jenkins_url") or "").strip()
     tscan_url = (form_data.get("tscan_jenkins_url") or "").strip()
-    if not release_url or not debug_url:
+    # 跳过 download/prepare/upload 三个阶段时，Jenkins 构建链接可不填
+    skip_flags = form_data.get("skip_flags") or {}
+    skip_all_download_prepare_upload = (
+        bool(skip_flags.get("skip_download"))
+        and bool(skip_flags.get("skip_prepare"))
+        and bool(skip_flags.get("skip_upload"))
+    )
+    if not skip_all_download_prepare_upload and (not release_url or not debug_url):
         raise ValueError("release_jenkins_url 和 debug_jenkins_url 都是必填")
 
     release_info = form_data.get("release", {})
@@ -3129,8 +3136,8 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     # 填入用户提供的 Jenkins build URL
     base_cfg.setdefault("jenkins", OrderedDict())
     base_cfg["jenkins"].setdefault("builds", OrderedDict())
-    base_cfg["jenkins"]["builds"]["debug"] = OrderedDict([("build_url", debug_url.rstrip("/") + "/")])
-    base_cfg["jenkins"]["builds"]["release"] = OrderedDict([("build_url", release_url.rstrip("/") + "/")])
+    base_cfg["jenkins"]["builds"]["debug"] = OrderedDict([("build_url", (debug_url.rstrip("/") + "/") if debug_url else "")])
+    base_cfg["jenkins"]["builds"]["release"] = OrderedDict([("build_url", (release_url.rstrip("/") + "/") if release_url else "")])
 
     # 清除运行时字段
     base_cfg["jenkins"]["builds"]["debug"].pop("download", None)
@@ -3265,6 +3272,10 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
             if tscan_url:
                 _push_log(task_id, f"TSCAN Jenkins: {tscan_url}")
             _push_log(task_id, f"版本编译已完成（跳过 Jenkins 触发），开始执行... {skip_msg}")
+            # 防御性日志：打印本次将要生成的 NAS 目录名（自动重试须与主流程完全一致）
+            _nas_base = ((base_cfg.get("nas") or {}).get("remote") or {}).get("base_dir", "")
+            _nas_variant = (base_cfg.get("release") or {}).get("variant", "")
+            _push_log(task_id, f"NAS 目标目录: {_nas_base}/{_nas_variant}")
             _push_progress(task_id, _running_tasks[task_id]["steps"])
 
             direct_env = os.environ.copy()
@@ -3318,6 +3329,10 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
                     _push_log(task_id, '>>> 检测到飞书 Wiki 授权失败，自动重试"直接生成文档"（重试 1/1）...')
                     _push_log(task_id, '    等待 8 秒让飞书会话刷新 ...')
                     time.sleep(8)
+                    # 防御性日志：显式打印重试将复用的 NAS 目录名，便于与主流程对照
+                    _rt_base = ((base_cfg.get("nas") or {}).get("remote") or {}).get("base_dir", "")
+                    _rt_variant = (base_cfg.get("release") or {}).get("variant", "")
+                    _push_log(task_id, f'    重试复用 NAS 目录（与主流程一致）: {_rt_base}/{_rt_variant}')
                     try:
                         new_resp = _launch_skip_jenkins_task(
                             form_data, project,
