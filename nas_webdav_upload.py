@@ -2,16 +2,18 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import html
 import json
 import mimetypes
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterable, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 
 class CurlHttpError(RuntimeError):
@@ -108,6 +110,8 @@ class WebDavClient:
         self._username = username
         self._password = password
         self._netrc_path: Optional[str] = None
+        # 缓存「小写归一化路径 → 真实大小写路径」，跨调用复用已确认的目录大小写
+        self._real_dir_cache: dict = {}
 
     def __enter__(self) -> "WebDavClient":
         # Use a temporary netrc file so credentials never appear in process args.
@@ -134,7 +138,7 @@ class WebDavClient:
                 pass
             self._netrc_path = None
 
-    def _curl(
+    def _run_curl(
         self,
         *,
         method: str,
@@ -142,8 +146,13 @@ class WebDavClient:
         data: Optional[bytes] = None,
         upload_file: Optional[Path] = None,
         headers: Optional[dict] = None,
-        ok_codes: Tuple[int, ...] = (200,),
-    ) -> None:
+        capture_body: bool = False,
+    ) -> Tuple[int, bytes, str]:
+        """底层 curl 调用，返回 (http_code, body_bytes, stderr)。
+
+        capture_body=True 时把响应体写入临时文件并读取返回；否则丢弃（保持原行为）。
+        returncode != 0 视为传输层错误，抛 CurlHttpError。
+        """
         if not self._netrc_path:
             raise RuntimeError("WebDavClient not initialized (missing netrc). Use as a context manager.")
 
@@ -182,8 +191,17 @@ class WebDavClient:
         if upload_file is not None:
             cmd.extend(["--upload-file", str(upload_file)])
 
-        # Capture http code
-        cmd.extend(["--output", os.devnull, "--write-out", "%{http_code}", url])
+        # Response body target
+        body_path: Optional[str] = None
+        if capture_body:
+            fd, body_path = tempfile.mkstemp(prefix="webdav_body_")
+            os.close(fd)
+            output_target = body_path
+        else:
+            output_target = os.devnull
+
+        # Capture http code (write-out goes to stdout, body goes to output_target)
+        cmd.extend(["--output", output_target, "--write-out", "%{http_code}", url])
 
         proc = subprocess.run(
             cmd,
@@ -192,8 +210,22 @@ class WebDavClient:
             stderr=subprocess.PIPE,
             check=False,
         )
+
+        body_bytes = b""
+        if capture_body and body_path:
+            try:
+                with open(body_path, "rb") as f:
+                    body_bytes = f.read()
+            except OSError:
+                body_bytes = b""
+            finally:
+                try:
+                    os.unlink(body_path)
+                except OSError:
+                    pass
+
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
         if proc.returncode != 0:
-            stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
             raise CurlHttpError(
                 f"curl {method} failed: rc={proc.returncode} url={url}",
                 method=method,
@@ -208,16 +240,34 @@ class WebDavClient:
         except ValueError:
             http_code = 0
 
+        return http_code, body_bytes, stderr
+
+    def _curl(
+        self,
+        *,
+        method: str,
+        url: str,
+        data: Optional[bytes] = None,
+        upload_file: Optional[Path] = None,
+        headers: Optional[dict] = None,
+        ok_codes: Tuple[int, ...] = (200,),
+    ) -> None:
+        http_code, _, stderr = self._run_curl(
+            method=method,
+            url=url,
+            data=data,
+            upload_file=upload_file,
+            headers=headers,
+            capture_body=False,
+        )
         if http_code in ok_codes:
             return
-
-        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
         raise CurlHttpError(
             f"curl {method} failed: status={http_code} url={url}",
             method=method,
             url=url,
             http_code=http_code,
-            returncode=proc.returncode,
+            returncode=0,
             stderr=stderr.strip()[:800],
         )
 
@@ -228,6 +278,73 @@ class WebDavClient:
         url = _remote_url(self._base_url, remote_dir_path)
         # 201 Created (ok), 405 Method Not Allowed (already exists), 200/204 (some servers)
         self._curl(method="MKCOL", url=url, ok_codes=(200, 201, 204, 405))
+
+    @staticmethod
+    def _parse_href_entries(text: str):
+        """解析 PROPFIND 响应中的 href，返回 [(basename, is_dir), ...]."""
+        entries = []
+        for m in re.findall(
+            r"<[^>]*href[^>]*>(.*?)</[^>]*href>",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            raw = m.strip()
+            if not raw:
+                continue
+            raw = html.unescape(raw)
+            decoded = unquote(raw)
+            is_dir = decoded.endswith("/")
+            decoded = decoded.rstrip("/")
+            if not decoded:
+                continue
+            base = decoded.rsplit("/", 1)[-1].strip()
+            if base:
+                entries.append((base, is_dir))
+        return entries
+
+    def _propfind_children(self, remote_dir_path: str):
+        """PROPFIND depth=1 列出目录直接子项名称。失败返回 []。"""
+        if not remote_dir_path.endswith("/"):
+            remote_dir_path += "/"
+        url = _remote_url(self._base_url, remote_dir_path)
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>'
+        ).encode("utf-8")
+        try:
+            http_code, resp_bytes, _ = self._run_curl(
+                method="PROPFIND",
+                url=url,
+                data=body,
+                headers={"Depth": "1"},
+                capture_body=True,
+            )
+        except CurlHttpError:
+            return []
+        if http_code not in (200, 207):
+            return []
+        text = resp_bytes.decode("utf-8", errors="replace")
+        parent_basename = remote_dir_path.rstrip("/").rsplit("/", 1)[-1]
+        names = []
+        for base, _is_dir in self._parse_href_entries(text):
+            if base == parent_basename:
+                continue
+            names.append(base)
+        return names
+
+    def _match_case_insensitive(self, parent_dir: str, seg: str) -> Optional[str]:
+        """在父目录中忽略大小写匹配真实存在的目录名；找不到返回 None。"""
+        if not seg:
+            return None
+        try:
+            children = self._propfind_children(parent_dir)
+        except Exception:
+            return None
+        low = seg.lower()
+        for c in children:
+            if c.lower() == low:
+                return c
+        return None
 
     def ensure_dir_tree(self, remote_dir_path: str) -> None:
         # Create each level under remote_dir_path
@@ -240,8 +357,22 @@ class WebDavClient:
         segments = [seg for seg in p.split("/") if seg]
         current = "/"
         for seg in segments:
+            # 命中缓存（小写归一化）则复用真实大小写路径，避免重复 PROPFIND/MKCOL
+            candidate = _join_remote(current, seg)
+            cached = self._real_dir_cache.get(candidate.lower())
+            if cached is not None:
+                current = cached
+                continue
+
+            # 首字母大小写兼容：先 PROPFIND 父目录，忽略大小写匹配真实目录名
+            # （解决「软件版本文档/项目名」等层级在 NAS 上大小写与配置不一致的问题）
+            real = self._match_case_insensitive(current, seg)
+            if real:
+                seg = real
+
             current = _join_remote(current, seg)
             self.mkcol(current)
+            self._real_dir_cache[current.lower()] = current
 
     def put_file(self, remote_file_path: str, local_file: Path) -> None:
         url = _remote_url(self._base_url, _norm_remote_path(remote_file_path))
