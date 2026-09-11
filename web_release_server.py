@@ -656,10 +656,12 @@ def _process_pipeline_line(task_id: str, line: str):
         _go(IDX_FS, 80)
 
     # -- 检测飞书 Wiki 授权失败 --
-    if 'Wiki 失败:' in clean and '未授权 wiki' in clean:
+    if 'Wiki 失败:' in clean:
         if not task.get("wiki_failed"):
             task["wiki_failed"] = True
-            if task.get("task_type") == "skip_jenkins":
+            if '131006' in clean:
+                _push_log(task_id, '⚠️ 应用无 wiki 空间编辑权限（131006）：请在飞书 wiki 空间「成员管理」中给应用加编辑权限，或执行 lark-cli auth login --domain wiki 恢复用户授权')
+            elif task.get("task_type") == "skip_jenkins":
                 _push_log(task_id, '⚠️ 检测到飞书 Wiki 授权失败，将在流程结束后自动重试 ...')
             else:
                 _push_log(task_id, '⚠️ 检测到飞书 Wiki 授权失败（完整流程不自动重试，可手动走"直接生成文档"）...')
@@ -3062,7 +3064,9 @@ def _prewarm_lark_auth(task_id: str) -> bool:
     try:
         from lark_cli_adapter import lark_auth_ensure
         _push_log(task_id, '>>> 预热飞书登录态（lark-cli wiki 域）...')
-        ok = lark_auth_ensure(domain="wiki", silent=True)
+        # force=True：每次都真跑一次 auth status，绕过失败缓存强制刷新磁盘登录态，
+        # 避免命中 30s 失败短路导致预热空转、后续子进程 Wiki 复制仍降级到 tenant token。
+        ok = lark_auth_ensure(domain="wiki", silent=True, force=True)
         if ok:
             _push_log(task_id, '    ✓ 飞书登录态就绪')
         else:

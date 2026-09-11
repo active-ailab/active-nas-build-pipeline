@@ -29,11 +29,9 @@ from typing import Any, Dict, List, Optional
 LARK_CLI_BIN = os.environ.get("LARK_CLI_BIN", "lark-cli")
 LARK_TIMEOUT_SEC = int(os.environ.get("LARK_CLI_TIMEOUT", "120"))
 FEISHU_ADMIN_EMAIL = os.environ.get("FEISHU_ADMIN_EMAIL", "cs-guoqifa@zepp.com")
-_auth_checked = False
-_auth_ok = False
-_auth_last_check = 0.0       # 上次检查时间戳，用于失败后允许重试
+_auth_state = {}              # domain_key -> {"ok": bool, "ts": float}，认证结果按 domain 分桶缓存
 _AUTH_CACHE_TTL = 300         # 成功后缓存 5 分钟
-_AUTH_RETRY_INTERVAL = 30     # 失败后 30 秒允许重试
+_AUTH_RETRY_INTERVAL = 30     # 失败后 30 秒允许重试（仅作用于同一 domain 桶，避免误伤其他 domain）
 _binary_checked = False
 _binary_ok = False
 
@@ -137,28 +135,40 @@ def _check_bin() -> bool:
 
 # ── 认证 ──
 
-def lark_auth_ensure(*, domain: Optional[str] = None, silent: bool = False) -> bool:
-    """检查 lark-cli 认证状态（带重试，失败允许后续恢复）"""
-    global _auth_checked, _auth_ok, _auth_last_check
+def lark_auth_ensure(*, domain: Optional[str] = None, silent: bool = False, force: bool = False) -> bool:
+    """检查 lark-cli 认证状态（带重试，失败允许后续恢复）。
+
+    认证结果按 domain 分桶缓存：
+    - 某个 domain 的一次偶发失败只会短路该 domain 后续 30 秒内的调用，
+      不再像旧版全局缓存那样污染其他 domain（例如完整流程开头无参检查失败，
+      会连带把 30 秒内的 wiki/docs 调用全部短路，导致静默降级到 tenant token）。
+    - force=True 时绕过失败缓存，强制重新真试一次（供关键操作兜底）。"""
     import time as _time
 
     now = _time.time()
+    key = domain or ""
 
-    # 成功缓存：短时间内直接复用
-    if _auth_checked and _auth_ok and (now - _auth_last_check) < _AUTH_CACHE_TTL:
-        return True
+    st = _auth_state.get(key)
+    if not force:
+        # 成功缓存：短时间内直接复用
+        if st and st["ok"] and (now - st["ts"]) < _AUTH_CACHE_TTL:
+            return True
+        # 失败缓存：同一 domain 桶内，超过间隔后允许重试（解决间歇性 auth 问题）
+        if st and not st["ok"] and (now - st["ts"]) < _AUTH_RETRY_INTERVAL:
+            return False
 
-    # 失败缓存：超过间隔后允许重试（解决间歇性 auth 问题）
-    if _auth_checked and not _auth_ok and (now - _auth_last_check) < _AUTH_RETRY_INTERVAL:
-        return False
+    ok = _auth_check_impl(domain=domain, silent=silent)
+    _auth_state[key] = {"ok": ok, "ts": _time.time()}
+    return ok
 
-    _auth_checked = True
-    _auth_last_check = now
+
+def _auth_check_impl(*, domain: Optional[str], silent: bool) -> bool:
+    """真正执行 auth status 检查 + auth login 自动恢复，返回是否授权成功。"""
+    import time as _time
 
     if not _check_bin():
         if not silent:
             print("\n⚠️  lark-cli 未安装: npx @larksuite/cli@latest install\n", file=sys.stderr)
-        _auth_ok = False
         return False
 
     # 重试 auth status，最多 3 次，间隔 2 秒（应对网络抖动）
@@ -166,7 +176,6 @@ def lark_auth_ensure(*, domain: Optional[str] = None, silent: bool = False) -> b
     for attempt in range(3):
         try:
             _run(["auth", "status"], timeout_sec=10)
-            _auth_ok = True
             return True
         except LarkCliError as e:
             last_err = e
@@ -182,7 +191,6 @@ def lark_auth_ensure(*, domain: Optional[str] = None, silent: bool = False) -> b
         if domain:
             login_args += ["--domain", domain]
         _run(login_args, timeout_sec=30)
-        _auth_ok = True
         if not silent:
             print("  ✓ lark-cli 自动恢复成功", file=sys.stderr)
         return True
@@ -190,7 +198,6 @@ def lark_auth_ensure(*, domain: Optional[str] = None, silent: bool = False) -> b
         if not silent:
             domain_hint = f" --domain {domain}" if domain else ""
             print(f"\n⚠️  lark-cli 认证失败，请手动执行:\n  lark-cli auth login{domain_hint}\n", file=sys.stderr)
-        _auth_ok = False
         return False
 
 
@@ -401,7 +408,9 @@ def lark_wiki_copy_node(
     tenant_access_token HTTP 直连（解决间歇性 "未授权 wiki" 问题）。
     feishu_oauth_cfg: feishu.oauth 配置，用于 tenant_token 获取时的凭证回退"""
     # 先尝试 lark-cli（带 user 身份）
-    if lark_auth_ensure(domain="wiki", silent=True):
+    # silent=False + force=True：失败时打印真实原因（而非静默降级），并绕过失败缓存强制真试一次，
+    # 避免被流程开头某次无参 auth 检查的偶发失败短路，导致误降级到 tenant token 撞 131006。
+    if lark_auth_ensure(domain="wiki", silent=False, force=True):
         try:
             params = {"space_id": str(target_space_id), "node_token": str(source_node_token)}
             body = {}
@@ -454,14 +463,22 @@ def lark_wiki_copy_node(
             _sid, source_node_token, json.dumps(body, ensure_ascii=False)), file=sys.stderr)
         resp = _http_post_json(api_url, body, token)
         if resp.get("code") != 0:
-            raise LarkCliError("Wiki HTTP fallback failed: code=%s msg=%s" % (
-                resp.get("code"), resp.get("msg", "")))
+            code = resp.get("code")
+            msg = resp.get("msg", "")
+            if code == 131006:
+                raise LarkCliError(
+                    "Wiki HTTP fallback: 应用(机器人)无该 wiki 空间编辑权限 (code=131006)。"
+                    "请在飞书 wiki 空间「成员管理」中把应用加入成员并授予「编辑」权限，"
+                    "或恢复 lark-cli 用户授权（lark-cli auth login --domain wiki）后重试。详情: %s" % msg)
+            raise LarkCliError("Wiki HTTP fallback failed: code=%s msg=%s" % (code, msg))
         node = resp.get("data", {}).get("node", {})
         nt = node.get("node_token", "")
         dt = node.get("obj_token", "")
         wiki_url = "https://%s/wiki/%s" % (_feishu_domain(), nt) if nt else ""
         print(f"  Wiki (HTTP): {wiki_url}", file=sys.stderr)
         return {"node_token": nt, "url": wiki_url, "docx_token": dt}
+    except LarkCliError:
+        raise  # 内层已给出针对性提示（如 131006 空间权限、space_id 无效），直接透传
     except Exception as e:
         raise LarkCliError("未授权 wiki（lark-cli 和 HTTP 均失败）: %s" % str(e)[:200])
 

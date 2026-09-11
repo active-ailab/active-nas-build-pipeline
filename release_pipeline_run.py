@@ -152,23 +152,30 @@ def _maybe_notify_webhook_text(*, cfg: Dict[str, Any], text: str, request_timeou
         print(f"WARN: failed to notify webhook: {e}", file=sys.stderr)
 
 
-def _feishu_notify_user(*, chat_id: str, markdown: str, feishu_cfg: Dict[str, Any]) -> None:
+def _feishu_notify_user(*, chat_id: str, markdown: str, feishu_cfg: Dict[str, Any]) -> bool:
     """通过飞书 Bot 发送 IM 通知（使用 tenant_access_token，无需每用户授权）。
     chat_id 可以是飞书 chat_id（oc_xxx，群聊）或用户 open_id（ou_xxx，个人）。
-    要求 Bot 已被添加到目标群聊 / 用户已与 Bot 交互以获取正确的 open_id。"""
+    要求 Bot 已被添加到目标群聊 / 用户已与 Bot 交互以获取正确的 open_id。
+    返回 bool：是否发送成功（供调用方决定是否回退到群聊）。"""
+    import urllib.request as _ur
     try:
         oauth_cfg = (feishu_cfg.get("oauth") or {}) if isinstance(feishu_cfg.get("oauth"), dict) else {}
-        app_id = _feishu_resolve_app_id(oauth_cfg)
-        app_secret = _feishu_resolve_app_secret(oauth_cfg)
+        # 发 IM 消息必须用「机器人应用」凭证：飞书机器人触发的 open_id 是机器人
+        # cli_a974 维度，若用 cli_a928（免登/wiki 应用）的 token 会报 99992361 open_id cross app。
+        # 优先 FEISHU_BOT_APP_ID/SECRET，回退 FEISHU_APP_ID/SECRET（旧行为，向后兼容）。
+        import os as _os
+        bot_app_id = _os.environ.get("FEISHU_BOT_APP_ID", "").strip()
+        bot_app_secret = _os.environ.get("FEISHU_BOT_APP_SECRET", "").strip()
+        app_id = bot_app_id or _feishu_resolve_app_id(oauth_cfg)
+        app_secret = bot_app_secret or _feishu_resolve_app_secret(oauth_cfg)
         if not app_id or not app_secret:
             print(f"[Notify] Bot skipped: feishu.oauth.app_id/app_secret not set "
-                  f"(set env FEISHU_APP_ID/FEISHU_APP_SECRET or feishu.oauth.* in cfg)", file=sys.stderr)
-            return
+                  f"(set env FEISHU_BOT_APP_ID/FEISHU_BOT_APP_SECRET 或 FEISHU_APP_ID/FEISHU_APP_SECRET)", file=sys.stderr)
+            return False
         token, _ = _feishu_get_tenant_access_token_internal(
             app_id=app_id, app_secret=app_secret, timeout_sec=10)
         content = json.dumps({"text": markdown}, ensure_ascii=False)
         receive_id_type = "open_id" if chat_id.startswith("ou_") else "chat_id"
-        import urllib.request as _ur
         data = json.dumps({"receive_id": chat_id, "msg_type": "text", "content": content}, ensure_ascii=False).encode("utf-8")
         req = _ur.Request(
             f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
@@ -180,11 +187,21 @@ def _feishu_notify_user(*, chat_id: str, markdown: str, feishu_cfg: Dict[str, An
             resp_data = json.loads(resp.read().decode("utf-8", errors="replace"))
         if resp_data.get("code") == 0:
             print(f"[Notify] Bot message sent to {receive_id_type}={chat_id}")
-        else:
-            print(f"[Notify] Bot send FAILED to {receive_id_type}={chat_id}: "
-                  f"code={resp_data.get('code')} msg={resp_data.get('msg', 'unknown')[:200]}", file=sys.stderr)
+            return True
+        print(f"[Notify] Bot send FAILED to {receive_id_type}={chat_id}: "
+              f"code={resp_data.get('code')} msg={resp_data.get('msg', 'unknown')[:200]}", file=sys.stderr)
+        return False
+    except _ur.HTTPError as e:
+        # 读取响应体，暴露飞书返回的具体 code/msg（HTTPError 不抛 body，需手动读）
+        try:
+            _body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+        except Exception:
+            _body = ""
+        print(f"[Notify] Bot send EXCEPTION to {chat_id}: HTTPError {e.code} {_body[:300]}", file=sys.stderr)
+        return False
     except Exception as e:
         print(f"[Notify] Bot send EXCEPTION to {chat_id}: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -5338,7 +5355,13 @@ def main() -> int:
             if not chat_id:
                 chat_id = str(feishu_cfg.get("notification_open_id") or "").strip()
             if chat_id:
-                _feishu_notify_user(chat_id=chat_id, markdown=direct_text, feishu_cfg=feishu_cfg)
+                sent = _feishu_notify_user(chat_id=chat_id, markdown=direct_text, feishu_cfg=feishu_cfg)
+                # 回退：个人 open_id（ou_）发送失败时，改发群聊 chat_id（oc_）
+                if not sent:
+                    grp_chat = str(feishu_cfg.get("notification_chat_id") or "").strip()
+                    if grp_chat and grp_chat != chat_id and grp_chat.startswith("oc_"):
+                        print(f"[Notify] Bot 个人通知失败，回退群聊 {grp_chat} ...", file=sys.stderr)
+                        _feishu_notify_user(chat_id=grp_chat, markdown=direct_text, feishu_cfg=feishu_cfg)
             else:
                 print("[Notify] Bot skipped: no chat_id resolved "
                       f"(operator_open_id={operator_open_id!r}, operator={operator!r}, "
