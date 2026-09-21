@@ -1,5 +1,4 @@
 {
-  "base_config": "common.json",
   "changelog": {
     "enabled": true,
     "jenkins_job_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT",
@@ -14,12 +13,12 @@
       "AFTER_MANIFEST_TAG": "${vars.tag}",
       "DIFF_COMPARE_SKIP_JIRA": "YES"
     },
-    "build_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT/4245/",
-    "build_number": 4245,
+    "build_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT/4480/",
+    "build_number": 4480,
     "status": "queued",
     "result": "",
-    "triggered_at": "20260821_121959",
-    "updated_at": "20260821_121959"
+    "triggered_at": "20260914_115314",
+    "updated_at": "20260914_115314"
   },
   "jenkins": {
     "base_url": "https://jenkins.huami.com",
@@ -93,7 +92,7 @@
           "output_dir": "work/download/${release.project}_debug",
           "overwrite": true
         },
-        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/8335/"
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/8399/"
       },
       "release": {
         "download": {
@@ -107,7 +106,7 @@
           "output_dir": "work/download/${release.project}_release",
           "overwrite": true
         },
-        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/8334/"
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/8398/"
       },
       "tscan": {
         "download": {
@@ -120,8 +119,7 @@
           ],
           "output_dir": "work/download/${release.project}_tscan",
           "overwrite": true
-        },
-        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/8336/"
+        }
       }
     }
   },
@@ -200,7 +198,7 @@
   },
   "notifications": {
     "webhook": {
-      "enabled": true,
+      "enabled": false,
       "url": "",
       "verify_tls": true,
       "timeout_sec": 10,
@@ -208,6 +206,7 @@
       "on_failure": true,
       "on_progress": true,
       "print_response": false,
+      "note": "2026-09-07: webhook 链路被 Base workflow 假成功坑, 已禁用并切换到多维表格 (feishu.base) 直写",
       "payload_by_event": {
         "download_start": {
           "text": "开始下载(${runtime.extra.run_name})\nBuild: ${runtime.extra.build_url}\nOut: ${runtime.extra.out_dir}"
@@ -223,7 +222,7 @@
   },
   "llm": {
     "provider": "deepseek",
-    "api_key": "",
+    "api_key": "sk-65ed6aba8b7b43208dd4c5b9af0756ca",
     "api_key_env": "DEEPSEEK_API_KEY",
     "api_url": "https://api.deepseek.com/v1/chat/completions",
     "model": "deepseek-chat",
@@ -236,6 +235,7 @@
   "feishu": {
     "enabled": true,
     "use_wiki": true,
+    "notification_chat_id": "oc_15bd1c246dac2f39ea2dcabc714854f7",
     "notification_cc_open_ids": [],
     "wiki_copy_only": true,
     "docx_replace_placeholders": true,
@@ -285,7 +285,7 @@
     "timeout_sec": 30,
     "debug_dump_response": false,
     "user_token_saved_at": 1778472214,
-    "template_node_token": "BxspwrmF2iyi1ckrTvLcbvWanmb",
+    "_base_template_note": "【2026-09-07 改造】旧 webhook (Base workflow) 假成功, 改为 lark_base_upsert_record 直写多维表格记录。需在 .env 注入 base_token/table_id, 并把 enabled 设为 true。",
     "base": {
       "enabled": true,
       "base_token": "RQTfbINKyaHqPNsCdYgcvinynie",
@@ -303,15 +303,17 @@
         "发布时间": "发布时间",
         "飞书文档": "飞书文档"
       },
-      "_field_note": "左=本系统内字段名, 右=多维表格里的列名。环节流水由 feishu_base_notifier.notify_stage() 逐环节追加一行"
-    }
+      "_field_note": "左=本系统内字段名, 右=多维表格里的列名 (需在飞书侧先建好同名/同语义的列)。环节流水由 feishu_base_notifier.notify_stage() 逐环节追加一行"
+    },
+    "template_node_token": "BxspwrmF2iyi1ckrTvLcbvWanmb",
+    "notification_open_id": "ou_784eb1795cc4a1016603b6f3cc66ada1"
   },
   "release": {
     "project": "stuttgart",
     "device_name": "stuttgart",
-    "stage": "ota12 第三轮(封版)",
-    "version": "3.25.0.3",
-    "variant": "stuttgart ota12 第三轮(封版) v3.25.0.3",
+    "stage": "第三轮",
+    "version": "1.1.0.3",
+    "variant": "stuttgart 第三轮 v1.1.0.3",
     "notes": "releases/stuttgart/ota",
     "xml_name": "stuttgart",
     "operator": "u_mr49a060_s93dtw"
@@ -321,14 +323,14 @@
     "boot_tag": "stuttgart-bootloader-1.1.1",
     "recovery_tag": "stuttgart-recovery-1.1.0",
     "fct_tag": "stuttgart-fct-1.3.7",
-    "release_version_name": "3.25.0",
-    "debug_version_name": "3.25.1",
-    "fct_version_name": "3.25.0",
+    "release_version_name": "1.1.0",
+    "debug_version_name": "1.1.1",
+    "fct_version_name": "1.1.0",
     "prev_version_name": "3.25.0.2",
     "prev_version_code": "202608171109",
     "build_mode": "OTA,OTA_SLEEP,FCT,BOOT,RECOVERY",
     "fw_ver_strategy_env": "none",
-    "build_tscan": "yes",
+    "build_tscan": "no",
     "auto_bind_after_upgrade": "yes",
     "hmi_core_mm_owner_dep": ""
   }

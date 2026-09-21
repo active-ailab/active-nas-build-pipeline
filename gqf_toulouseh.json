@@ -1,5 +1,4 @@
 {
-  "base_config": "common.json",
   "changelog": {
     "enabled": true,
     "jenkins_job_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT",
@@ -236,6 +235,7 @@
   "feishu": {
     "enabled": true,
     "use_wiki": true,
+    "notification_chat_id": "oc_242ad25668ef6b86b6b06d7b6f13bcfd",
     "notification_cc_open_ids": [],
     "wiki_copy_only": true,
     "docx_replace_placeholders": true,
@@ -286,6 +286,7 @@
     "debug_dump_response": false,
     "user_token_saved_at": 1778472214,
     "template_node_token": "NNaww14OPiYXBmknxRvcEd0tnFD",
+    "notification_open_id": "ou_784eb1795cc4a1016603b6f3cc66ada1",
     "base": {
       "enabled": true,
       "base_token": "RQTfbINKyaHqPNsCdYgcvinynie",
