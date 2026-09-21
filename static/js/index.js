@@ -813,6 +813,17 @@ async function nextStep4() {
     if (tagFctEl) tagFctEl.value = b.tag_fct || '';
     if (verReleaseEl) verReleaseEl.value = b.ver_release || '';
     if (verDebugEl) verDebugEl.value = b.ver_debug || '';
+    // FCT 版本号回填：历史值若与 release 不一致，视为自定义，自动勾选并回填
+    const fctCustomEl = document.getElementById('fct_version_custom');
+    const verFctInputEl = document.getElementById('ver_fct');
+    if (b.ver_fct && b.ver_release && b.ver_fct !== b.ver_release) {
+      if (fctCustomEl) fctCustomEl.checked = true;
+      if (verFctInputEl) verFctInputEl.value = b.ver_fct;
+    } else {
+      if (fctCustomEl) fctCustomEl.checked = false;
+      if (verFctInputEl) verFctInputEl.value = '';
+    }
+    updateFctVersionCustomUI();
     if (diffNameEl) diffNameEl.value = b.diff_name || '';
     if (diffCodeEl) diffCodeEl.value = b.diff_code || '';
     const fwVerEnvEl = document.getElementById('fw_ver_strategy_env'); if (fwVerEnvEl) fwVerEnvEl.value = b.fw_ver_strategy_env || 'none';
@@ -1184,6 +1195,35 @@ function updateVersionModeHint() {
   }
 }
 
+// ================== FCT 版本号自定义 ==================
+// 勾选框切换：勾选时显示 FCT 版本号输入框（默认填入当前 release 版本号），取消时隐藏并清空（回到跟随 release）
+function handleFctVersionCustomToggle(el) {
+  const verFctEl = document.getElementById('ver_fct');
+  if (el && el.checked) {
+    if (verFctEl && !verFctEl.value.trim()) {
+      verFctEl.value = (document.getElementById('ver_release')?.value || '').trim();
+    }
+  } else {
+    if (verFctEl) verFctEl.value = '';
+  }
+  updateFctVersionCustomUI();
+}
+
+function updateFctVersionCustomUI() {
+  const customEl = document.getElementById('fct_version_custom');
+  const wrap = document.getElementById('ver_fct_wrap');
+  if (wrap) wrap.classList.toggle('hidden', !(customEl && customEl.checked));
+}
+
+// 获取最终 FCT 版本号：勾选自定义则取输入框值，否则跟随 release 版本号
+function getFctVersionName() {
+  const customEl = document.getElementById('fct_version_custom');
+  if (customEl && customEl.checked) {
+    return (document.getElementById('ver_fct')?.value || '').trim();
+  }
+  return (document.getElementById('ver_release')?.value || '').trim();
+}
+
 // 打开 Gerrit 查看发版分支最新 tag
 function openGerritBranchLog() {
   const branchEl = document.getElementById('publishBranch');
@@ -1224,6 +1264,14 @@ function nextStep6() {
   else if (verReleaseErrorTip) verReleaseErrorTip.classList.remove('show');
   if (verDebug && !versionThreePartRegex.test(verDebug) && verDebugErrorTip) { verDebugErrorTip.classList.add('show'); hasError = true; }
   else if (verDebugErrorTip) verDebugErrorTip.classList.remove('show');
+  // FCT 自定义版本号格式校验（仅在勾选「fct 版本号自定义」时生效）
+  const fctCustomEl = document.getElementById('fct_version_custom');
+  const verFctErrorTip = document.getElementById('ver_fctErrorTip');
+  if (fctCustomEl && fctCustomEl.checked) {
+    const verFctCustom = (document.getElementById('ver_fct')?.value || '').trim();
+    if (verFctCustom && !versionThreePartRegex.test(verFctCustom) && verFctErrorTip) { verFctErrorTip.classList.add('show'); hasError = true; }
+    else if (verFctErrorTip) verFctErrorTip.classList.remove('show');
+  } else if (verFctErrorTip) { verFctErrorTip.classList.remove('show'); }
   if (hasError) { alert('版本参数格式错误，请输入 x.x.x 格式（如 1.3.0）'); return; }
 
   // ── 第六步必填校验：TAG / 版本参数 / 构建内容 ──
@@ -1270,7 +1318,7 @@ function nextStep6() {
     tag_algo: document.getElementById('tag_algo')?.value || '', tag_boot: document.getElementById('tag_boot')?.value || '',
     tag_recovery: document.getElementById('tag_recovery')?.value || '', tag_fct: document.getElementById('tag_fct')?.value || '',
     ver_release: verReleaseEl?.value || '', ver_debug: verDebugEl?.value || '',
-    ver_fct: verReleaseEl?.value || '',  // fct 版本号始终等于 release 版本号
+    ver_fct: getFctVersionName(),  // 勾选自定义则取输入框值，否则跟随 release 版本号
     diff_name: document.getElementById('diff_name')?.value || '', diff_code: document.getElementById('diff_code')?.value || '',
     build_content: document.getElementById('build_content')?.value || '',
     fw_ver_strategy_env: document.getElementById('fw_ver_strategy_env')?.value || 'none',
@@ -2314,6 +2362,9 @@ function clearAllInput(){
   const fwVerEnvEl = document.getElementById('fw_ver_strategy_env'); if (fwVerEnvEl) fwVerEnvEl.value = 'none';
   const tscanEl = document.getElementById('build_tscan'); if (tscanEl) tscanEl.checked = false;
   const autoBindEl = document.getElementById('auto_bind_after_upgrade'); if (autoBindEl) autoBindEl.checked = false;
+  const fctCustomEl = document.getElementById('fct_version_custom'); if (fctCustomEl) fctCustomEl.checked = false;
+  const verFctEl = document.getElementById('ver_fct'); if (verFctEl) verFctEl.value = '';
+  updateFctVersionCustomUI();
   initBuildContentCheckboxes(''); resetEditState(); selectedVersionData = null; canGoNextStep4 = false;
   if (diffTomSelect) { diffTomSelect.clear(); }
   if (branchTomSelect) { branchTomSelect.clear(); }
@@ -2399,7 +2450,7 @@ async function runDirectPipeline() {
   const tag_fct = document.getElementById('tag_fct')?.value.trim() || '';
   const ver_release = document.getElementById('ver_release')?.value.trim() || '';
   const ver_debug = document.getElementById('ver_debug')?.value.trim() || '';
-  const ver_fct = document.getElementById('ver_fct')?.value.trim() || '';
+  const ver_fct = getFctVersionName();  // 勾选自定义则取输入框值，否则跟随 release 版本号
   const diff_name = document.getElementById('diff_name')?.value.trim() || '';
   const diff_code = document.getElementById('diff_code')?.value.trim() || '';
   const build_content = document.getElementById('build_content')?.value.trim() || '';
@@ -2479,7 +2530,7 @@ async function nextStep7() {
   const tag_fct = document.getElementById('tag_fct')?.value.trim() || '';
   const ver_release = document.getElementById('ver_release')?.value.trim() || '';
   const ver_debug = document.getElementById('ver_debug')?.value.trim() || '';
-  const ver_fct = ver_release;  // fct 版本号始终等于 release 版本号
+  const ver_fct = getFctVersionName();  // 勾选自定义则取输入框值，否则跟随 release 版本号
   const diff_name = document.getElementById('diff_name')?.value.trim() || '';
   const diff_code = document.getElementById('diff_code')?.value.trim() || '';
   const build_content = document.getElementById('build_content')?.value.trim() || '';
