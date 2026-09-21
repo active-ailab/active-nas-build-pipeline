@@ -4199,7 +4199,7 @@ def api_start_changelog(project: str):
 
     device = (form_data.get("device") or project).strip()
     # MANIFEST_FILE 去 _64m/_32/_64 后缀（milan_64m→milan.xml、pamir_64m→pamir.xml、rome_64m→rome.xml）
-    manifest = (form_data.get("manifest") or f"{re.sub(r'_\d+m?$', '', device)}.xml").strip()
+    manifest = (form_data.get("manifest") or "").strip() or (re.sub(r'_\d+m?$', '', device) + ".xml")
     prev_ver_name = (form_data.get("prev_version_name") or "").strip()
     prev_ver_code = (form_data.get("prev_version_code") or "").strip()
     curr_ver_name = (form_data.get("curr_version_name") or "").strip()
