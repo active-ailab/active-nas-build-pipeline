@@ -3234,6 +3234,11 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     if "changelog" in base_cfg:
         for key in ("build_url", "build_number", "status", "result", "triggered_at", "updated_at"):
             base_cfg["changelog"].pop(key, None)
+        # 直接生成文档（跳过编译）模式：禁用 changelog。
+        # 该模式只跑下载→上传→文档，编译已提前完成，无需再触发/复用 CMP-JIRA-GIT 差分任务，
+        # 否则会复用 output/changelog_job.json 遗留的旧 build 静默轮询，或回退重新触发 changelog（401）。
+        # common.json 默认 changelog.enabled=true，这里显式置 false 覆盖（read_json_with_base 深度合并时子配置优先）。
+        base_cfg["changelog"]["enabled"] = False
 
     # 写入临时配置文件（不覆盖项目 JSON）
     _strip_common_fields(base_cfg)

@@ -2868,14 +2868,12 @@ def _dsl_execute_prepare_flow(
                 else:
                     dest = upload_payload_dir / f"jenkins_{current_run}_console.log"
 
-                # Jenkins auth from main cfg
-                j_auth = (cfg.get("jenkins") or {}).get("auth") or {}
-                if not isinstance(j_auth, dict):
-                    j_auth = {}
-                j_user = str(j_auth.get("username") or "").strip()
-                j_pass = str(j_auth.get("password") or "").strip()
+                # Jenkins auth（env 优先，与主流程一致）
+                resolved_auth = _resolve_jenkins_auth(cfg)
+                j_user = resolved_auth.get("username") or ""
+                j_pass = resolved_auth.get("password") or ""
                 if not j_user or not j_pass:
-                    raise RuntimeError("DSL: Jenkins auth missing (jenkins.auth.username/password)")
+                    raise RuntimeError("DSL: Jenkins auth missing (jenkins.auth.username/password or env JENKINS_USERNAME/JENKINS_PASSWORD)")
 
                 timeout_sec = int((cfg.get("jenkins") or {}).get("timeout_sec", 600))
                 _jenkins_download_console_text(
@@ -3275,14 +3273,42 @@ def _changelog_state_finished_without_diff() -> bool:
     return str(state.get("status") or "").strip().lower() == "finished_no_diff"
 
 
-def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str, str], j_auth: Dict[str, Any], timeout_sec: int = 600) -> str:
+def _resolve_jenkins_auth(cfg: Dict[str, Any]) -> Dict[str, str]:
+    """解析 Jenkins 凭据（env 优先），供 changelog 链路复用。
+
+    与主流程 _run_pipeline 内联逻辑（约 L5225-5238）保持一致：env > config > ${ENV:...} 占位符。
+    返回 {"username": ..., "password": ...}；解析失败不抛异常，降级返回空串，
+    由下游自然失败/跳过，避免影响主发版流程。
+    """
+    from credential_resolver import resolve_credential, CREDENTIAL_ENV_MAP
+
+    j_auth = (cfg.get("jenkins") or {}).get("auth") or {}
+    if not isinstance(j_auth, dict):
+        j_auth = {}
+
+    user = resolve_credential(
+        str(j_auth.get("username") or "").strip(),
+        CREDENTIAL_ENV_MAP.get("jenkins.auth.username", "JENKINS_USERNAME"),
+        required=False, sensitive=False,
+    ) or os.environ.get("JENKINS_USERNAME", "").strip()
+
+    pwd = resolve_credential(
+        str(j_auth.get("password") or "").strip(),
+        CREDENTIAL_ENV_MAP.get("jenkins.auth.password", "JENKINS_PASSWORD"),
+        required=False, sensitive=True,
+    ) or os.environ.get("JENKINS_PASSWORD", "").strip()
+
+    return {"username": user, "password": pwd}
+
+
+def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str, str], j_auth: Dict[str, Any], timeout_sec: int = 300) -> str:
     """Trigger Jenkins CMP-JIRA-GIT job and extract Feishu link from console output.
     
     Args:
         job_url: Jenkins job URL (e.g. https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT)
         params: Parameters dict for the job (BEFORE_VERSION_NAME, AFTER_VERSION_NAME, etc.)
         j_auth: Jenkins auth config (username, password)
-        timeout_sec: Timeout in seconds (default 600s = 10 minutes)
+        timeout_sec: Timeout in seconds (default 300s = 5 minutes)
     
     Returns:
         Feishu link URL if found, empty string if failed/timeout
@@ -3531,6 +3557,11 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
     if not isinstance(params, dict):
         return ""
 
+    # 解析 Jenkins 凭据（env 优先，与主流程一致）。原实现直接用 config 原始值
+    # （password 可能是 ${ENV:JENKINS_PASSWORD} 占位符或空串），导致 changelog
+    # 复用/触发时的 Basic Auth 401。这里统一解析成明文。
+    j_auth = _resolve_jenkins_auth(cfg)
+
     state = _load_changelog_state()
     if isinstance(changelog_cfg, dict):
         for key in ("job_url", "build_number", "build_url", "status", "result", "triggered_at", "updated_at", "finished_at", "link"):
@@ -3615,7 +3646,7 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                     link, _no_diff = _extract_from_existing(
                         job_url_base=base,
                         build_number=bn,
-                        j_auth=(cfg.get("jenkins") or {}).get("auth") or {},
+                        j_auth=j_auth,
                         timeout_sec=30,
                     )
                     if link:
@@ -3646,15 +3677,15 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                 link, no_diff = _extract_from_existing(
                     job_url_base=base,
                     build_number=bn,
-                    j_auth=(cfg.get("jenkins") or {}).get("auth") or {},
-                    timeout_sec=int(changelog_cfg.get("timeout_sec", 600)),
+                    j_auth=j_auth,
+                    timeout_sec=int(changelog_cfg.get("timeout_sec", 300)),
                 )
                 if no_diff:
                     print(f"差分报告：复用的构建 #{bn} 已完成但未生成差分报告，停止等待")
                     result, building = _get_build_result(
                         job_url_base=base,
                         build_number=bn,
-                        j_auth=(cfg.get("jenkins") or {}).get("auth") or {},
+                        j_auth=j_auth,
                     )
                     _update_changelog_state(
                         job_url=base,
@@ -3670,7 +3701,7 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                     result, building = _get_build_result(
                         job_url_base=base,
                         build_number=bn,
-                        j_auth=(cfg.get("jenkins") or {}).get("auth") or {},
+                        j_auth=j_auth,
                     )
                     _update_changelog_state(
                         job_url=base,
@@ -3717,13 +3748,10 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
         if xml_name:
             expanded_params["MANIFEST_FILE"] = f"{xml_name}.xml"
     
-    # Get Jenkins auth from config
-    j_auth = (cfg.get("jenkins") or {}).get("auth") or {}
-    if not isinstance(j_auth, dict):
-        j_auth = {}
-    
+    # j_auth 已在函数开头解析（env 优先），此处直接复用
+
     # Trigger job and get Feishu link
-    timeout = int(changelog_cfg.get("timeout_sec", 600))
+    timeout = int(changelog_cfg.get("timeout_sec", 300))
     feishu_link = _trigger_changelog_job_and_get_feishu_link(
         job_url=job_url,
         params=expanded_params,

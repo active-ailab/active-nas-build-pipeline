@@ -3,6 +3,7 @@
     "enabled": true,
     "jenkins_job_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT",
     "block_until_ready": true,
+    "timeout_sec": 300,
     "params": {
       "PRODUCTION": "${release.project}",
       "BEFORE_VERSION_NAME": "${vars.prev_version_name}",
