@@ -405,7 +405,8 @@ _COMMON_SUB = {
                "oauth", "template_file_token", "target_space_id",
                "docx_target_folder_token", "docx_allow_create_fallback",
                "share_admin_perm", "share_file_type", "name_template", "placeholder_overrides",
-               "timeout_sec", "debug_dump_response"},
+               "timeout_sec", "debug_dump_response",
+               "notification_chat_id", "notification_open_id", "notification_cc_open_ids"},
 }
 
 def _strip_common_fields(cfg: dict):
@@ -454,6 +455,17 @@ def _resolve_credential(value: str, env_key: str) -> str:
     if value.startswith("${ENV:") and value.endswith("}"):
         return ""  # 占位符未解析，返回空
     return value
+
+
+def _jenkins_pass_for_env(j_pass: str) -> str:
+    """计算用于子进程 env 注入的 Jenkins 密码明文。
+
+    - `${ENV:XXX}` 占位符 → 从环境变量解析（飞书 bot 公共账号，避免覆盖成字面量）
+    - 明文 → 原样返回（Web 登录用户 token，覆盖 .env 全局值）
+    """
+    if isinstance(j_pass, str) and j_pass.startswith("${ENV:") and j_pass.endswith("}"):
+        return os.environ.get(j_pass[6:-1], "") or j_pass
+    return j_pass
 
 
 from credential_resolver import sanitize_config_for_display
@@ -1472,9 +1484,12 @@ def _do_trigger_build(chat_id: str, device: str, version: str, params: dict, ope
                 print(f"[FeishuBot] write changelog vars failed: {e}", file=sys.stderr)
 
         payload = {"release": release_info, "vars": bot_vars, "user_id": f"feishu_bot_{chat_id}", "open_id": open_id, "jenkins_auth": {"username": "", "password": ""}}
+        # 飞书 bot 触发无浏览器登录，使用公共 Jenkins 账号：username 取 config，密码落盘用占位符（避免明文入库）
         jcfg = cfg.get("jenkins", {}); auth = jcfg.get("auth", {})
-        if auth.get("username") and auth.get("token"):
-            payload["jenkins_auth"] = {"username": auth["username"], "password": auth["token"]}
+        bot_j_user = (auth.get("username") or "").strip()
+        bot_j_pass = _resolve_credential(str(auth.get("password") or auth.get("token") or ""), "JENKINS_PASSWORD")
+        if bot_j_user and bot_j_pass:
+            payload["jenkins_auth"] = {"username": bot_j_user, "password": "${ENV:JENKINS_PASSWORD}"}
 
         lbl_ver = release_info.get('version', '') or '配置默认'
         override_msg = ("（覆盖：" + ", ".join(override_msg_parts) + "）") if override_msg_parts else ""
@@ -1559,8 +1574,10 @@ def _do_trigger_changelog(chat_id, device, params):
 
         jcfg = cfg.get("jenkins", {}); auth = jcfg.get("auth", {})
         jenkins_auth = {"username": "", "password": ""}
-        if auth.get("username") and auth.get("token"):
-            jenkins_auth = {"username": auth["username"], "password": auth["token"]}
+        bot_j_user = (auth.get("username") or "").strip()
+        bot_j_pass = _resolve_credential(str(auth.get("password") or auth.get("token") or ""), "JENKINS_PASSWORD")
+        if bot_j_user and bot_j_pass:
+            jenkins_auth = {"username": bot_j_user, "password": "${ENV:JENKINS_PASSWORD}"}
 
         # MANIFEST_FILE 去 _64m/_32/_64 后缀（milan_64m→milan.xml、pamir_64m→pamir.xml、rome_64m→rome.xml）
         xml_name = str((cfg.get("release") or {}).get("xml_name") or "").strip()
@@ -1660,6 +1677,9 @@ def _extract_params_from_doc(doc_text: str) -> dict:
     if urls:
         params["_doc_urls"] = urls
     return params
+
+
+def _do_trigger_tscan(chat_id, device, params):
     """触发 TSCAN 扫描"""
     try:
         from lark_cli_adapter import lark_send_message
@@ -1671,11 +1691,23 @@ def _extract_params_from_doc(doc_text: str) -> dict:
         if not tag:
             lark_send_message(chat_id=chat_id, markdown="❌ 缺少算法 tag")
             return
+        # 读取公共 Jenkins 账号（bot 触发无浏览器登录，与 build/changelog 对齐）
+        jenkins_auth = {}
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            auth = (cfg.get("jenkins") or {}).get("auth", {})
+            bot_j_user = (auth.get("username") or "").strip()
+            bot_j_pass = _resolve_credential(str(auth.get("password") or auth.get("token") or ""), "JENKINS_PASSWORD")
+            if bot_j_user and bot_j_pass:
+                jenkins_auth = {"username": bot_j_user, "password": "${ENV:JENKINS_PASSWORD}"}
+        except Exception:
+            pass
         lark_send_message(chat_id=chat_id, markdown=f"🔄 正在触发 **{device}** TSCAN...")
         with app.test_client() as client:
             resp = client.post(f"/api/projects/{device}/tscan-only", json={
                 "device": device, "tag_algo": tag,
                 "user_id": f"feishu_bot_{chat_id}",
+                "jenkins_auth": jenkins_auth,
             }, content_type="application/json")
             data = resp.get_json()
             if data.get("ok"):
@@ -1697,6 +1729,18 @@ def _do_trigger_skip_jenkins(chat_id, device, params, open_id=""):
         if not release_url:
             lark_send_message(chat_id=chat_id, markdown="❌ 缺少 Jenkins Build URL")
             return
+        # 读取公共 Jenkins 账号（下载产物鉴权，与 build/changelog/tscan 对齐）
+        jenkins_auth = {}
+        try:
+            cfg_path = SCRIPT_DIR / f"gqf_{device}.json"
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            auth = (cfg.get("jenkins") or {}).get("auth", {})
+            bot_j_user = (auth.get("username") or "").strip()
+            bot_j_pass = _resolve_credential(str(auth.get("password") or auth.get("token") or ""), "JENKINS_PASSWORD")
+            if bot_j_user and bot_j_pass:
+                jenkins_auth = {"username": bot_j_user, "password": "${ENV:JENKINS_PASSWORD}"}
+        except Exception:
+            pass
         lark_send_message(chat_id=chat_id, markdown=f"🔄 正在为 **{device}** 生成文档...")
         with app.test_client() as client:
             body = {
@@ -1704,6 +1748,7 @@ def _do_trigger_skip_jenkins(chat_id, device, params, open_id=""):
                 "release": {"project": device, "version": ver, "device_name": device, "stage": "release"},
                 "vars": {"tag_algo": params.get("tag", "")},
                 "user_id": f"feishu_bot_{chat_id}",
+                "jenkins_auth": jenkins_auth,
             }
             if open_id:
                 body["open_id"] = open_id
@@ -1754,7 +1799,7 @@ def api_feishu_event():
         sender_id = sender.get("sender_id", {})
         open_id = str(sender_id.get("open_id") or "").strip()
         if open_id and chat_id:
-            _record_user_identity(open_id=open_id, chat_id=chat_id)
+            _record_user_identity(open_id=open_id, chat_id=chat_id, chat_type=chat_type)
 
         # 群聊中只响应 @机器人的消息；私聊中响应所有消息
         is_group = (chat_type == "group")
@@ -1804,8 +1849,11 @@ def _cleanup_bind_codes():
         del _bind_codes[c]
 
 
-def _record_user_identity(*, open_id: str, chat_id: str):
-    """记录飞书用户 open_id → chat_id 映射（用于个人通知）"""
+def _record_user_identity(*, open_id: str, chat_id: str, chat_type: str = ""):
+    """记录飞书用户 open_id → chat_id 映射（用于个人通知）。
+    只记录私聊(p2p)会话：群聊 chat_id 不能作为个人通知目标，且可能指向已废弃的旧群。"""
+    if chat_type and chat_type != "p2p":
+        return
     identities: Dict[str, Any] = {}
     try:
         if USER_IDENTITY_FILE.exists():
@@ -2818,19 +2866,12 @@ def api_release(project: str):
         base_cfg.setdefault("release", {})
         base_cfg["release"]["operator"] = operator
     # 存储触发者的飞书 open_id（用于最终个人通知，群聊触发时 chat_id≠open_id）
-    trigger_open_id = (form_data.get("open_id") or "").strip()
+    # 个人通知已改为按 open_id 直发（receive_id_type=open_id），
+    # 不再用 open_id→chat_id 反查覆盖群聊 notification_chat_id（避免旧群/废弃会话导致 230002）。
+    trigger_open_id = (form_data.get("open_id") or form_data.get("notification_open_id") or "").strip()
     if trigger_open_id:
         base_cfg.setdefault("release", {})
         base_cfg["release"]["operator_open_id"] = trigger_open_id
-    # 存储通知目标：从 web 界面传来的飞书 open_id（用于个人通知）
-    notify_oid = (form_data.get("notification_open_id") or "").strip()
-    if notify_oid:
-        base_cfg.setdefault("feishu", {})
-        base_cfg["feishu"]["notification_open_id"] = notify_oid
-        # 查找对应的 chat_id（用于 lark-cli 发送）
-        n_chat_id = _lookup_chat_id_from_open_id(notify_oid)
-        if n_chat_id:
-            base_cfg["feishu"]["notification_chat_id"] = n_chat_id
     if "vars" in form_data:
         base_cfg["vars"] = {**base_cfg.get("vars", {}), **form_data["vars"]}
 
@@ -2959,6 +3000,11 @@ def api_release(project: str):
             # 使用 Popen 实时捕获输出，而不是 run()
             pipeline_env = os.environ.copy()
             pipeline_env["PYTHONUNBUFFERED"] = "1"  # 强制行缓冲，避免子进程输出积压
+            # 将当前登录用户的 Jenkins 凭据注入子进程环境，覆盖 .env 的全局 JENKINS_PASSWORD，
+            # 避免「用户名取 config、密码取 env」错配导致 401
+            if j_user and j_pass:
+                pipeline_env["JENKINS_USERNAME"] = j_user
+                pipeline_env["JENKINS_PASSWORD"] = _jenkins_pass_for_env(j_pass)
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(SCRIPT_DIR),
@@ -3132,7 +3178,7 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
         rel["device_name"] = project_name
 
     # 设置 operator_open_id 用于 Bot 通知（谁触发谁收到）
-    trigger_open_id = (form_data.get("open_id") or "").strip()
+    trigger_open_id = (form_data.get("open_id") or form_data.get("notification_open_id") or "").strip()
     if trigger_open_id:
         base_cfg.setdefault("release", {})
         base_cfg["release"]["operator_open_id"] = trigger_open_id
@@ -3284,6 +3330,10 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
 
             direct_env = os.environ.copy()
             direct_env["PYTHONUNBUFFERED"] = "1"  # 强制行缓冲，避免子进程输出积压
+            # 注入当前登录用户的 Jenkins 凭据，覆盖 .env 全局值，保证与 config 一致
+            if j_user and j_pass:
+                direct_env["JENKINS_USERNAME"] = j_user
+                direct_env["JENKINS_PASSWORD"] = _jenkins_pass_for_env(j_pass)
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(SCRIPT_DIR),
@@ -3448,6 +3498,13 @@ def api_tscan_only(project: str):
         val = (form_data.get(key) or "").strip()
         if val:
             cfg["vars"][key] = val
+    # 使用当前登录用户的 Jenkins 凭据（覆盖 gqf_{device}.json 里的默认账号 cs-guoqifa）
+    j_auth = form_data.get("jenkins_auth") or {}
+    j_user = (j_auth.get("username") or "").strip()
+    j_pass = (j_auth.get("password") or "").strip()
+    if j_user and j_pass:
+        cfg.setdefault("jenkins", {}).setdefault("auth", {})
+        cfg["jenkins"]["auth"] = {"type": "basic", "username": j_user, "password": j_pass}
     # 写入临时配置文件（TSCAN 独立构建不修改项目 JSON）
     import tempfile as _tempfile_mod
     tmp_fd, tmp_path = _tempfile_mod.mkstemp(suffix='.json', prefix=f'gqf_{device}_tscan_', dir=str(SCRIPT_DIR))
@@ -3493,10 +3550,15 @@ def api_tscan_only(project: str):
                 "--tscan-standalone",
                 "--no-backup",
             ]
+            tscan_env = os.environ.copy()
+            if j_user and j_pass:
+                tscan_env["JENKINS_USERNAME"] = j_user
+                tscan_env["JENKINS_PASSWORD"] = _jenkins_pass_for_env(j_pass)
             proc = subprocess.Popen(
                 cmd, cwd=str(SCRIPT_DIR),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, universal_newlines=True,
+                env=tscan_env,
             )
             _running_tasks[task_id]["proc"] = proc
 

@@ -224,6 +224,7 @@
     "enabled": true,
     "use_wiki": true,
     "notification_chat_id": "oc_242ad25668ef6b86b6b06d7b6f13bcfd",
+    "notification_open_id": "ou_784eb1795cc4a1016603b6f3cc66ada1",
     "notification_cc_open_ids": [],
     "wiki_copy_only": true,
     "docx_replace_placeholders": true,
