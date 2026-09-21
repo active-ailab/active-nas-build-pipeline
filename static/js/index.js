@@ -2081,8 +2081,9 @@ function startChangelogSSE(taskId) {
   };
 }
 
-/** 显示飞书差分报告链接（成功态：绿色边框 + 链接） */
-function showFeishuLink(link) {
+/** 显示飞书链接卡片（成功态：绿色边框 + 链接）。
+ *  titleText：可选标题，默认「差分报告已生成」（changelog 用），普通发版传「飞书文档已生成」。 */
+function showFeishuLink(link, titleText) {
   const card = document.getElementById('feishuLinkCard');
   const icon = document.getElementById('feishuLinkIcon');
   const title = document.getElementById('feishuLinkTitle');
@@ -2094,7 +2095,7 @@ function showFeishuLink(link) {
   // 成功态：绿色边框 + ✅ + 链接
   card.className = 'mb-4 rounded-lg border-2 border-green-400 bg-green-50 p-4 transition-all duration-300';
   if (icon) { icon.className = 'fa fa-check-circle text-green-500 text-lg'; }
-  if (title) { title.className = 'font-semibold text-green-700 text-sm'; title.textContent = '差分报告已生成'; }
+  if (title) { title.className = 'font-semibold text-green-700 text-sm'; title.textContent = titleText || '差分报告已生成'; }
   if (urlEl) { urlEl.href = link; urlEl.className = 'inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 hover:underline font-mono text-sm break-all'; }
   if (textEl) { textEl.textContent = link; }
   if (noLinkMsg) { noLinkMsg.className = 'hidden text-sm'; }
@@ -2128,19 +2129,6 @@ function formatDate(raw) {
   const d = raw.replace(/_/g, '').substring(0, 8);
   if (d.length < 8) return raw;
   return d.substring(0, 4) + '/' + d.substring(4, 6) + '/' + d.substring(6, 8);
-}
-
-// 比较两个版本号字符串（x.y.z.w），返回负数/0/正数
-function _compareVersionNames(a, b) {
-  const pa = String(a).split('.').map(Number);
-  const pb = String(b).split('.').map(Number);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const va = pa[i] || 0;
-    const vb = pb[i] || 0;
-    if (va !== vb) return va - vb;
-  }
-  return 0;
 }
 
 async function fetchDiffVersions(device) {
@@ -2204,31 +2192,10 @@ async function fetchDiffVersions(device) {
       production: item.production || '',
     }));
 
-    // 按 versionCode 去重，相同 versionCode 只保留 versionName 最低的那条
-    const deduped = [];
-    const seen = {};
-    for (const opt of options) {
-      const code = opt.versionCode;
-      if (!seen.hasOwnProperty(code)) {
-        seen[code] = opt;
-        deduped.push(opt);
-      } else {
-        // 比较 versionName，保留更低版本
-        const existing = seen[code];
-        if (_compareVersionNames(opt.text, existing.text) < 0) {
-          // 替换旧数据
-          const idx = deduped.indexOf(existing);
-          if (idx >= 0) {
-            deduped[idx] = opt;
-            seen[code] = opt;
-          }
-        }
-      }
-    }
-
+    // 不去重：列出全部版本（同一 versionCode 的不同 versionName 也全部展示）
     diffTomSelect.destroy();
     diffTomSelect = new TomSelect('#diffVersionSelect', {
-      options: deduped,
+      options: options,
       placeholder: '请选择差分目标版本...',
       maxOptions: null,
       create: false,
@@ -3124,6 +3091,10 @@ function startSSEStream(taskId) {
           window._jenkinsJobUrl = msg.jenkins_job_url;
           updateJenkinsBtn();
         }
+        // 恢复飞书文档链接（普通发版任务完成后在日志上方展示）
+        if (msg.feishu_link) {
+          showFeishuLink(msg.feishu_link, '飞书文档已生成');
+        }
         // 如果任务已完成，直接触发完成逻辑
         if (msg.status && !['running', 'starting', 'triggering'].includes(msg.status)) {
           compileEventSource.close();
@@ -3162,6 +3133,12 @@ function startSSEStream(taskId) {
         return;
       }
 
+      // 飞书文档链接（发版完成生成飞书文档后推送，展示在日志上方）
+      if (msg.feishu_link) {
+        showFeishuLink(msg.feishu_link, '飞书文档已生成');
+        return;
+      }
+
       // 日志行
       if (msg.line) {
         addLogAppend(msg.line);
@@ -3181,6 +3158,10 @@ function startSSEStream(taskId) {
         if (msg.jenkins_job_url) {
           window._jenkinsJobUrl = msg.jenkins_job_url;
           updateJenkinsBtn();
+        }
+        // 飞书文档链接（complete 消息附带）
+        if (msg.feishu_link) {
+          showFeishuLink(msg.feishu_link, '飞书文档已生成');
         }
         onTaskComplete(msg.status, msg.exit_code);
       }
@@ -3222,6 +3203,11 @@ function startFallbackPolling(taskId) {
         addLogAppend(`⚠️ 查询任务状态失败: ${data.error || '未知错误'}`);
         sseFallbackTimer = setTimeout(doPoll, 5000);
         return;
+      }
+
+      // 飞书文档链接（降级轮询也同步展示）
+      if (data.feishu_link) {
+        showFeishuLink(data.feishu_link, '飞书文档已生成');
       }
 
       const logs = data.log || [];

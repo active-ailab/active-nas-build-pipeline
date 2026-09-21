@@ -787,6 +787,19 @@ def _process_pipeline_line(task_id: str, line: str):
                 ts["message"] = "TSCAN 产物已上传 NAS，飞书文档已更新"
                 _push_tscan_progress(task_id, ts)
 
+    # -- 提取飞书文档链接（Wiki 模板 / 新建文档），推送给前端在日志上方展示 --
+    if task and not task.get("feishu_link"):
+        feishu_m = re.search(r'https?://zepp\.feishu\.cn/(?:wiki|docx|docs)/\S+', clean)
+        if feishu_m:
+            feishu_url = feishu_m.group(0).rstrip('>,;')
+            task["feishu_link"] = feishu_url
+            sse_q = _task_streams.get(task_id)
+            if sse_q:
+                try:
+                    sse_q.put_nowait({"feishu_link": feishu_url})
+                except queue.Full:
+                    pass
+
     _push_log(task_id, clean)
     _push_progress(task_id, steps)
 
