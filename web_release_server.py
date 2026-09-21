@@ -2944,7 +2944,8 @@ def api_release(project: str):
         base_cfg.setdefault("jenkins", {})["auth"] = {
             "type": "basic",
             "username": j_user,
-            "password": j_pass,
+            # 密码不落盘明文（gqf_*.json 会入库）；运行时由子进程 env 注入当前登录用户明文
+            "password": "${ENV:JENKINS_PASSWORD}",
         }
 
     # 写入新配置文件
@@ -3244,7 +3245,8 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     j_user = (j_auth.get("username") or "").strip()
     j_pass = (j_auth.get("password") or "").strip()
     if j_user and j_pass:
-        base_cfg.setdefault("jenkins", {})["auth"] = {"type": "basic", "username": j_user, "password": j_pass}
+        # 密码不落盘明文，写占位符；运行时由子进程 env 注入当前登录用户明文
+        base_cfg.setdefault("jenkins", {})["auth"] = {"type": "basic", "username": j_user, "password": "${ENV:JENKINS_PASSWORD}"}
     # 注入当前用户的飞书 token
     user_id = (form_data.get("user_id") or "").strip()
     _inject_user_feishu_token(base_cfg, user_id)
@@ -3504,7 +3506,8 @@ def api_tscan_only(project: str):
     j_pass = (j_auth.get("password") or "").strip()
     if j_user and j_pass:
         cfg.setdefault("jenkins", {}).setdefault("auth", {})
-        cfg["jenkins"]["auth"] = {"type": "basic", "username": j_user, "password": j_pass}
+        # 密码不落盘明文，写占位符；运行时由子进程 env 注入当前登录用户明文
+        cfg["jenkins"]["auth"] = {"type": "basic", "username": j_user, "password": "${ENV:JENKINS_PASSWORD}"}
     # 写入临时配置文件（TSCAN 独立构建不修改项目 JSON）
     import tempfile as _tempfile_mod
     tmp_fd, tmp_path = _tempfile_mod.mkstemp(suffix='.json', prefix=f'gqf_{device}_tscan_', dir=str(SCRIPT_DIR))
