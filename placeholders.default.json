@@ -29,16 +29,14 @@
           "name": "find release top tgz",
           "root": "${jenkins.builds.release.download.output_dir}",
           "match": { "regex": "^archive_${release.project}_.*\\.tgz$" },
-          "save_as": "release_top_tgz",
-          "optional": true
+          "save_as": "release_top_tgz"
         },
         {
           "op": "extract_tgz",
           "name": "extract top tgz to step1",
           "from": "release_top_tgz",
           "to": "${prepare.flow.work_dir}/step1_archive_${release.project}",
-          "save_as": "step1_dir",
-          "optional": true
+          "save_as": "step1_dir"
         },
         {
           "op": "extract_if_single_tar",

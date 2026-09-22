@@ -2282,6 +2282,85 @@ def _now_timestamp() -> str:
     return _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+def _cleanup_lru_batches(
+    root_dir: Path,
+    *,
+    max_batches: int = 12,
+    batch_gap_sec: int = 3600,
+    dry_run: bool = False,
+) -> Tuple[int, int]:
+    """按 mtime 聚类为「发版批次」，仅保留最近 max_batches 批，删除更早批次的文件。
+
+    一次发版的产物（下载/解压）mtime 都落在同一时间窗口内；相邻文件 mtime 间隔超过
+    batch_gap_sec 即视为新一批。返回 (删除文件数, 释放字节数)。
+    """
+    root_dir = Path(root_dir).expanduser().resolve()
+    if not root_dir.is_dir():
+        return 0, 0
+
+    files: List[Tuple[Path, float]] = []
+    for p in root_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            mt = 0.0
+        files.append((p, mt))
+
+    if not files:
+        return 0, 0
+
+    # 最新在前
+    files.sort(key=lambda item: item[1], reverse=True)
+
+    # 聚类：相邻 mtime 差 > batch_gap_sec 则开启新批次
+    batches: List[List[Tuple[Path, float]]] = []
+    cur: List[Tuple[Path, float]] = [files[0]]
+    prev_mt = files[0][1]
+    for p, mt in files[1:]:
+        if prev_mt - mt > batch_gap_sec:
+            batches.append(cur)
+            cur = []
+        cur.append((p, mt))
+        prev_mt = mt
+    if cur:
+        batches.append(cur)
+
+    deleted = 0
+    freed = 0
+    for batch in batches[max_batches:]:
+        for p, mt in batch:
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = 0
+            if dry_run:
+                print(f"[Cleanup] dry-run: would delete {p} (mtime={mt:.0f})")
+            else:
+                try:
+                    p.unlink()
+                    deleted += 1
+                    freed += size
+                except OSError as e:
+                    print(f"[Cleanup] WARN: delete failed {p}: {e}", file=sys.stderr)
+
+    # 删除后清理空目录（自深到浅）
+    if not dry_run and deleted:
+        dirs = sorted(
+            (d for d in root_dir.rglob("*") if d.is_dir()),
+            key=lambda d: len(d.parts),
+            reverse=True,
+        )
+        for d in dirs:
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+
+    return deleted, freed
+
+
 def _render_version_doc_markdown(
     *,
     release_cfg: Dict[str, Any],
@@ -4521,6 +4600,45 @@ def _curl_bytes(
     return proc.stdout
 
 
+_ARCHIVE_SUFFIXES = (".tgz", ".tar.gz", ".tar", ".zip")
+
+
+def _is_archive_path(path: Path) -> bool:
+    n = str(path.name or "").lower()
+    return n.endswith(_ARCHIVE_SUFFIXES)
+
+
+def _verify_archive_integrity(path: Path) -> Tuple[bool, str]:
+    """Verify a downloaded archive is readable/complete. Returns (ok, error).
+
+    A truncated download (e.g. interrupted curl) leaves a .tgz whose gzip
+    stream ends before its trailer, or a .zip without a valid central
+    directory. This catches that so a corrupt artifact is not silently kept
+    and later "successfully" uploaded / extracted.
+    """
+    if not path.exists():
+        return False, "file missing"
+    n = str(path.name or "").lower()
+    try:
+        if n.endswith(".zip"):
+            with zipfile.ZipFile(str(path), "r") as zf:
+                bad = zf.testzip()
+            if bad:
+                return False, f"zip member corrupt: {bad}"
+            return True, ""
+        if n.endswith((".tgz", ".tar.gz")):
+            with tarfile.open(str(path), mode="r:gz") as tf:
+                tf.getmembers()
+            return True, ""
+        if n.endswith(".tar"):
+            with tarfile.open(str(path), mode="r:") as tf:
+                tf.getmembers()
+            return True, ""
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    return True, ""
+
+
 def _curl_download_file(
     *,
     url: str,
@@ -4683,13 +4801,8 @@ def jenkins_download_artifacts(
         print(f"Jenkins: {len(selected)} artifacts selected. Output: {out_dir}")
 
         # ── 并行下载 ──
-        def _download_one(idx_rel_url):
-            idx, rel, url = idx_rel_url
-            dest = out_dir / rel
-            result = {"idx": idx, "rel": rel, "ok": True}
-            print(f"  [{idx}/{len(selected)}] {rel}")
-            if dry_run:
-                return result
+        def _do_download() -> None:
+            # Download one artifact; on failure, try the Jenkins `*zip*` fallback.
             try:
                 _curl_download_file(
                     url=url, netrc_path=netrc.path, verify_tls=verify_tls,
@@ -4712,11 +4825,41 @@ def jenkins_download_artifacts(
                     if zip_dest.exists():
                         try: zip_dest.unlink()
                         except Exception: pass
-                    result["ok"] = False
-                    result["error"] = str(e2)
+                    raise RuntimeError(str(e2)) from e2
+
+        def _download_one(idx_rel_url):
+            idx, rel, url = idx_rel_url
+            dest = out_dir / rel
+            result = {"idx": idx, "rel": rel, "ok": True}
+            print(f"  [{idx}/{len(selected)}] {rel}")
+            if dry_run:
+                return result
+            try:
+                _do_download()
             except Exception as e:
                 result["ok"] = False
                 result["error"] = str(e)
+                return result
+
+            # Archive integrity verification: a truncated download (interrupted
+            # curl) can still "succeed" while leaving a corrupt .tgz/.zip. Verify
+            # and retry once before giving up.
+            if _is_archive_path(dest):
+                ok, err = _verify_archive_integrity(dest)
+                if not ok:
+                    print(
+                        f"  [{idx}/{len(selected)}] {rel} WARN: 归档完整性校验失败 ({err})，重试下载...",
+                        file=sys.stderr,
+                    )
+                    try:
+                        _do_download()
+                        ok2, err2 = _verify_archive_integrity(dest)
+                        if not ok2:
+                            result["ok"] = False
+                            result["error"] = f"archive integrity failed after retry: {err2}"
+                    except Exception as e:
+                        result["ok"] = False
+                        result["error"] = f"retry download failed: {e}"
             return result
 
         workers = min(len(selected), 8)
@@ -4944,6 +5087,11 @@ def main() -> int:
     ap.add_argument("--skip-share", action="store_true", help="Skip NAS share link generation")
     ap.add_argument("--skip-doc", action="store_true", help="Skip generating local Feishu version doc")
     ap.add_argument("--skip-feishu", action="store_true", help="Skip generating Feishu cloud doc")
+    ap.add_argument(
+        "--skip-cleanup",
+        action="store_true",
+        help="Skip LRU cleanup of work/download and work/prepare (keep all historical artifacts)",
+    )
     ap.add_argument(
         "--feishu-preauth",
         action="store_true",
@@ -6111,6 +6259,40 @@ def main() -> int:
         elif args.dry_run:
             feishu_status = "skipped (dry-run)"
         _notify_base_stage(cfg, "飞书文档", "跳过")
+
+    # ═══════════════════════════════════════════════════════════════
+    # LRU 清理：控制 work/download、work/prepare 下各项目目录的产物批次，
+    # 防止磁盘无限膨胀（保留最近 N 批，删除更早的）。
+    # 可配置：cleanup.enabled / max_batches / batch_gap_sec / dirs；
+    # 命令行 --skip-cleanup 可临时禁用。
+    # ═══════════════════════════════════════════════════════════════
+    cleanup_cfg = (cfg.get("cleanup") or {}) if isinstance(cfg.get("cleanup"), dict) else {}
+    cleanup_enabled = bool(cleanup_cfg.get("enabled", True))
+    cleanup_max_batches = int(cleanup_cfg.get("max_batches", 12))
+    cleanup_gap_sec = int(cleanup_cfg.get("batch_gap_sec", 3600))
+    cleanup_dirs = cleanup_cfg.get("dirs") or ["work/download", "work/prepare"]
+    if cleanup_enabled and not args.skip_cleanup:
+        try:
+            for _d in cleanup_dirs:
+                base = _resolve_cfg_path(str(_d))
+                if not base.is_dir():
+                    continue
+                for sub in sorted(base.iterdir()):
+                    if not sub.is_dir():
+                        continue
+                    try:
+                        del_cnt, freed = _cleanup_lru_batches(
+                            sub,
+                            max_batches=cleanup_max_batches,
+                            batch_gap_sec=cleanup_gap_sec,
+                            dry_run=args.dry_run,
+                        )
+                        if del_cnt:
+                            print(f"[Cleanup] {sub.name}: removed {del_cnt} files ({freed / 1048576:.1f} MB)")
+                    except Exception as e:
+                        print(f"[Cleanup] WARN: skip {sub}: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"[Cleanup] WARN: LRU cleanup failed: {e}", file=sys.stderr)
 
     return _finalize(0)
 
