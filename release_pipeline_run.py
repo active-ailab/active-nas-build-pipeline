@@ -4801,7 +4801,7 @@ def jenkins_download_artifacts(
         print(f"Jenkins: {len(selected)} artifacts selected. Output: {out_dir}")
 
         # ── 并行下载 ──
-        def _do_download() -> None:
+        def _do_download(url: str, rel: str, dest: Path) -> None:
             # Download one artifact; on failure, try the Jenkins `*zip*` fallback.
             try:
                 _curl_download_file(
@@ -4835,7 +4835,7 @@ def jenkins_download_artifacts(
             if dry_run:
                 return result
             try:
-                _do_download()
+                _do_download(url, rel, dest)
             except Exception as e:
                 result["ok"] = False
                 result["error"] = str(e)
@@ -4852,7 +4852,7 @@ def jenkins_download_artifacts(
                         file=sys.stderr,
                     )
                     try:
-                        _do_download()
+                        _do_download(url, rel, dest)
                         ok2, err2 = _verify_archive_integrity(dest)
                         if not ok2:
                             result["ok"] = False

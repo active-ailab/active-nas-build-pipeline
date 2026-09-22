@@ -3015,6 +3015,9 @@ function startCompileTask(taskId, taskType) {
   // 隐藏 TSCAN 结果卡片
   const tscanResultCard = document.getElementById('tscanResultCard');
   if (tscanResultCard) tscanResultCard.classList.add('hidden');
+  // 隐藏飞书链接卡片（新任务开始时重置，避免残留上一个任务的链接）
+  const flCard = document.getElementById('feishuLinkCard');
+  if (flCard) flCard.classList.add('hidden');
   window._tscanBuildUrl = null;
   window._isTscanStandalone = false;
   // 恢复总进度条
