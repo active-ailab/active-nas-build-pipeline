@@ -2446,7 +2446,9 @@ async function runDirectPipeline() {
       skip_download: document.getElementById('skipDownload')?.checked || false,
       skip_prepare: document.getElementById('skipPrepare')?.checked || false,
       skip_upload: document.getElementById('skipUpload')?.checked || false,
-      skip_share: document.getElementById('skipShare')?.checked || false,
+      // skip_share 已从界面隐藏，强制 false：分享链接阶段必须执行，
+      // 否则文档中 nas_share 占位符解析为空、裸 {{REL_*}} 残留。
+      skip_share: false,
       skip_doc: document.getElementById('skipDoc')?.checked || false,
       skip_feishu: document.getElementById('skipFeishu')?.checked || false,
     },
