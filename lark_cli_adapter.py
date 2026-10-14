@@ -22,7 +22,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ── 配置 ──
@@ -157,26 +157,38 @@ def lark_auth_ensure(*, domain: Optional[str] = None, silent: bool = False, forc
         if st and not st["ok"] and (now - st["ts"]) < _AUTH_RETRY_INTERVAL:
             return False
 
-    ok = _auth_check_impl(domain=domain, silent=silent)
+    ok, _ = _auth_check_impl(domain=domain, silent=silent)
     _auth_state[key] = {"ok": ok, "ts": _time.time()}
     return ok
 
 
-def _auth_check_impl(*, domain: Optional[str], silent: bool) -> bool:
-    """真正执行 auth status 检查 + auth login 自动恢复，返回是否授权成功。"""
+def lark_auth_check(*, domain: Optional[str] = None, silent: bool = False) -> Tuple[bool, str]:
+    """执行一次完整的 auth 检查，返回 (是否就绪, 失败原因摘要)。
+
+    供预热等需要失败详情场景使用；不写入 _auth_state 缓存。
+    reason 取值：
+      - ""                        —— 就绪
+      - "lark-cli 未安装"          —— 二进制不存在
+      - "auth status 报错 + auth login 恢复失败: <err>" —— 登录态检查与自动恢复均失败
+    """
+    return _auth_check_impl(domain=domain, silent=silent)
+
+
+def _auth_check_impl(*, domain: Optional[str], silent: bool) -> Tuple[bool, str]:
+    """真正执行 auth status 检查 + auth login 自动恢复，返回 (是否授权成功, 失败原因)。"""
     import time as _time
 
     if not _check_bin():
         if not silent:
             print("\n⚠️  lark-cli 未安装: npx @larksuite/cli@latest install\n", file=sys.stderr)
-        return False
+        return False, "lark-cli 未安装"
 
     # 重试 auth status，最多 3 次，间隔 2 秒（应对网络抖动）
     last_err = None
     for attempt in range(3):
         try:
             _run(["auth", "status"], timeout_sec=10)
-            return True
+            return True, ""
         except LarkCliError as e:
             last_err = e
             if attempt < 2:
@@ -193,12 +205,12 @@ def _auth_check_impl(*, domain: Optional[str], silent: bool) -> bool:
         _run(login_args, timeout_sec=30)
         if not silent:
             print("  ✓ lark-cli 自动恢复成功", file=sys.stderr)
-        return True
-    except LarkCliError:
+        return True, "auth status 失败，已自动恢复登录"
+    except LarkCliError as e:
         if not silent:
             domain_hint = f" --domain {domain}" if domain else ""
             print(f"\n⚠️  lark-cli 认证失败，请手动执行:\n  lark-cli auth login{domain_hint}\n", file=sys.stderr)
-        return False
+        return False, f"auth status 报错 + auth login 恢复失败: {e}"
 
 
 # ── 文档 ──

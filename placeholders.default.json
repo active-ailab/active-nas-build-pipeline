@@ -473,6 +473,13 @@
         "match": { "regex": ".*md5.*\\.txt$|md5\\.txt$|_md5\\.txt$|md5sum\\.txt$" }
       },
 
+      "{{REL_RELEASE_MD5}}": {
+        "mode": "nas_share",
+        "run": "release",
+        "match": { "regex": "^${release.project}_md5\\.txt$" },
+        "required": false
+      },
+
       "{{REL_BUILD_LOG_FILE_FILENAME}}": {
         "mode": "filename_for_share",
         "share_placeholder": "{{REL_BUILD_LOG_FILE}}"
