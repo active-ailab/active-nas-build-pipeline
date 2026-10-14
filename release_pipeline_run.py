@@ -3380,7 +3380,7 @@ def _resolve_jenkins_auth(cfg: Dict[str, Any]) -> Dict[str, str]:
     return {"username": user, "password": pwd}
 
 
-def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str, str], j_auth: Dict[str, Any], timeout_sec: int = 300) -> str:
+def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str, str], j_auth: Dict[str, Any], timeout_sec: int = 300, project: str = "", version: str = "") -> str:
     """Trigger Jenkins CMP-JIRA-GIT job and extract Feishu link from console output.
     
     Args:
@@ -3508,6 +3508,8 @@ def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str
                             status="running",
                             result="",
                             triggered_at=time.strftime("%Y%m%d_%H%M%S"),
+                            project=project,
+                            version=version,
                         )
                         break
             except Exception:
@@ -3530,6 +3532,8 @@ def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str
                             status="running",
                             result="",
                             triggered_at=time.strftime("%Y%m%d_%H%M%S"),
+                            project=project,
+                            version=version,
                         )
                     else:
                         return ""
@@ -3559,6 +3563,8 @@ def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str
                         status="finished",
                         result=str(result or ""),
                         finished_at=time.strftime("%Y%m%d_%H%M%S"),
+                        project=project,
+                        version=version,
                     )
                     break
             except Exception:
@@ -3586,6 +3592,8 @@ def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str
                     link=link,
                     status="finished",
                     result=str(result or ""),
+                    project=project,
+                    version=version,
                 )
                 return link
             if no_diff_match:
@@ -3597,6 +3605,8 @@ def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str
                     status="finished_no_diff",
                     result=str(result or ""),
                     link="",
+                    project=project,
+                    version=version,
                 )
                 return ""
             print(f"WARN: Link not found in #{build_number}")
@@ -3650,6 +3660,27 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
             if isinstance(value, str) and not value.strip():
                 continue
             state[str(key)] = value
+    
+    # ── 归属校验：changelog 状态跨项目共享（CMP-JIRA-GIT 是共用 job）──
+    # 全局 state 文件与项目配置文件 changelog 段都可能残留上一个项目/上一次运行的
+    # build 信息。必须确认残留构建属于「本次项目 + 本次版本」，否则丢弃并走正常触发，
+    # 避免把上一个项目的差分链接误当成本次发版文档。
+    cur_project = str((cfg.get("release") or {}).get("project") or "").strip()
+    cur_version = str((cfg.get("release") or {}).get("version") or "").strip()
+    _state_project = str(state.get("project") or "").strip()
+    _state_version = str(state.get("version") or "").strip()
+    _belongs = (
+        bool(_state_project)
+        and _state_project == cur_project
+        and (not _state_version or not cur_version or _state_version == cur_version)
+    )
+    if not _belongs:
+        if _state_project or state.get("build_number"):
+            print(f"Changelog: 残留 changelog 状态（{_state_project or '?'}/{_state_version or '?'} build#{state.get('build_number')}）与本次 {cur_project}/{cur_version} 不一致，丢弃并重新触发")
+        state = {}
+        # 清除项目配置文件 changelog 段的运行时残留，避免上面的覆盖逻辑又把旧 build 带回来
+        for _k in ("build_number", "build_url", "status", "result", "triggered_at", "updated_at", "finished_at", "link"):
+            changelog_cfg.pop(_k, None)
     
     # Fast path: try reuse an existing async-triggered job if present.
     def _extract_from_existing(job_url_base: str, build_number: int, j_auth: Dict[str, Any], timeout_sec: int) -> Tuple[str, bool]:
@@ -3835,7 +3866,9 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
         job_url=job_url,
         params=expanded_params,
         j_auth=j_auth,
-        timeout_sec=timeout
+        timeout_sec=timeout,
+        project=cur_project,
+        version=cur_version
     )
     
     return feishu_link

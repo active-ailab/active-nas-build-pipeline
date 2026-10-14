@@ -788,17 +788,23 @@ def _process_pipeline_line(task_id: str, line: str):
                 _push_tscan_progress(task_id, ts)
 
     # -- 提取飞书文档链接（Wiki 模板 / 新建文档），推送给前端在日志上方展示 --
-    if task and not task.get("feishu_link"):
-        feishu_m = re.search(r'https?://zepp\.feishu\.cn/(?:wiki|docx|docs)/\S+', clean)
-        if feishu_m:
-            feishu_url = feishu_m.group(0).rstrip('>,;')
-            task["feishu_link"] = feishu_url
-            sse_q = _task_streams.get(task_id)
-            if sse_q:
-                try:
-                    sse_q.put_nowait({"feishu_link": feishu_url})
-                except queue.Full:
-                    pass
+    # 只认「发版文档」特征行（Wiki 复制 / 新建文档），排除 changelog/差分链接：
+    # 上一个项目残留的差分链接会以 "Changelog: ..." 形式先于本次 Wiki 链接出现在日志里，
+    # 若用宽松正则抓第一条会抢走横幅。这里用白名单特征 + 可覆盖保证横幅永远指向本次发版文档。
+    if task:
+        feishu_m = re.search(
+            r'(?:\bWiki\b(?:\([^)]*\))?|飞书文档已创建)\s*[:：]\s*(https?://zepp\.feishu\.cn/(?:wiki|docx|docs)/[^\s>,;]+)',
+            clean, re.IGNORECASE)
+        if feishu_m and not re.search(r'Changelog|差分', clean, re.IGNORECASE):
+            feishu_url = feishu_m.group(1).strip().rstrip('.,;')
+            if task.get("feishu_link") != feishu_url:
+                task["feishu_link"] = feishu_url
+                sse_q = _task_streams.get(task_id)
+                if sse_q:
+                    try:
+                        sse_q.put_nowait({"feishu_link": feishu_url})
+                    except queue.Full:
+                        pass
 
     _push_log(task_id, clean)
     _push_progress(task_id, steps)
@@ -3122,15 +3128,16 @@ def _prewarm_lark_auth(task_id: str) -> bool:
     返回是否就绪；False 仅告警，不阻塞任务启动。
     """
     try:
-        from lark_cli_adapter import lark_auth_ensure
+        from lark_cli_adapter import lark_auth_check
         _push_log(task_id, '>>> 预热飞书登录态（lark-cli wiki 域）...')
-        # force=True：每次都真跑一次 auth status，绕过失败缓存强制刷新磁盘登录态，
-        # 避免命中 30s 失败短路导致预热空转、后续子进程 Wiki 复制仍降级到 tenant token。
-        ok = lark_auth_ensure(domain="wiki", silent=True, force=True)
+        # 直接跑一次完整检查并取失败原因（绕过失败缓存，等价于原 force=True 语义），
+        # 失败时把原因一行打进任务日志，便于定位是「未安装 / auth status 报错 / auth login 失败」。
+        ok, reason = lark_auth_check(domain="wiki", silent=True)
         if ok:
-            _push_log(task_id, '    ✓ 飞书登录态就绪')
+            suffix = f'（{reason}）' if reason else ''
+            _push_log(task_id, f'    ✓ 飞书登录态就绪{suffix}')
         else:
-            _push_log(task_id, '    ⚠️ 飞书登录态预热未就绪，后续 Wiki 复制可能降级/失败')
+            _push_log(task_id, f'    ⚠️ 飞书登录态预热未就绪: {reason}（后续 Wiki 复制可能降级/失败）')
         return ok
     except Exception as e:
         _push_log(task_id, f'    ⚠️ 飞书登录态预热跳过: {e}')

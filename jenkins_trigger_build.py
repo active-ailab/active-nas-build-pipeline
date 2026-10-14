@@ -952,6 +952,8 @@ def _maybe_trigger_changelog_async(
         )
         print(f"Changelog: queued -> build #{num} {build_url}")
         # Persist a small state for the pipeline to pick up later
+        # 附上归属标识（项目+版本），供 release_pipeline_run 复用前校验，
+        # 避免共用 CMP-JIRA-GIT job 时复用上一个项目残留的构建。
         state = {
             "job_url": job,
             "build_number": int(num),
@@ -961,6 +963,8 @@ def _maybe_trigger_changelog_async(
             "status": "queued",
             "result": "",
             "parameters": params,
+            "project": str((cfg.get("release") or {}).get("project") or "").strip(),
+            "version": str((cfg.get("release") or {}).get("version") or "").strip(),
         }
         _write_json(_output_dir() / "changelog_job.json", state)
 
