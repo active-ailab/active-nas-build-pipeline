@@ -32,6 +32,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from config_loader import read_json_with_base
 
 
 # ── 常量 ──────────────────────────────────────────────────
@@ -80,7 +81,7 @@ def _load_config(config_path: str) -> Dict[str, Any]:
         path = SCRIPT_DIR / path
     if not path.exists():
         raise SystemExit(f"配置文件不存在: {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json_with_base(path)
 
 
 def _print_banner():
@@ -223,9 +224,17 @@ def cmd_doc(args: argparse.Namespace) -> int:
     # 文档标题
     name_tmpl = str(feishu_cfg.get("name_template") or "{project}_{version}_{timestamp}_版本文档").strip()
     now = datetime.now()
+    for placeholder, value in {
+        "{{REL_DEVICE_NAME}}": str(release_cfg.get("device_name") or project),
+        "{{REL_STAGE}}": str(release_cfg.get("stage") or ""),
+        "{{REL_VERSION}}": str(version),
+        "{{REL_DATE}}": f"{now.strftime('%y')}/{now.month}/{now.day}",
+    }.items():
+        name_tmpl = name_tmpl.replace(placeholder, value)
     doc_name = name_tmpl.format(
         project=project,
         version=version,
+        variant=release_cfg.get("variant", ""),
         timestamp=now.strftime("%Y%m%d_%H%M%S"),
     )
     
@@ -235,18 +244,22 @@ def cmd_doc(args: argparse.Namespace) -> int:
     if not args.dry_run:
         lark_auth_ensure()
     
-    result = lark_publish_release_document(
-        title=doc_name,
-        markdown_content=md_content,
-        dry_run=args.dry_run,
-    )
+    try:
+        result = lark_publish_release_document(
+            title=doc_name,
+            markdown_content=md_content,
+            dry_run=args.dry_run,
+        )
+    except Exception as e:
+        print(f"[ERR] 飞书文档生成失败: {e}", file=sys.stderr)
+        return 1
     
     if result.doc_url:
         print(f"\n[OK] 飞书文档已创建: {result.doc_url}")
     else:
         print(f"\n[WARN]  文档生成结果: {result.to_status_text()}")
     
-    return 0
+    return 0 if args.dry_run or result.doc_url or result.wiki_url else 1
 
 
 def cmd_trigger(args: argparse.Namespace) -> int:

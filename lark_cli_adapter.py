@@ -601,6 +601,7 @@ def lark_publish_release_document(
     notification_chat_id: Optional[str] = None,
     notification_title: Optional[str] = None,
     feishu_oauth_cfg: Optional[Dict[str, str]] = None,
+    required_placeholders: Optional[List[str]] = None,
     dry_run: bool = False,
 ) -> ReleaseDocResult:
     """
@@ -638,21 +639,27 @@ def lark_publish_release_document(
                 print(f"  Docx: {docx_token}")
         except LarkCliError as e:
             print(f"  Wiki 失败: {e}", file=sys.stderr)
+            raise
+
+        if not res.wiki_url or not docx_token:
+            raise LarkCliError("Wiki 失败: 复制结果缺少 Wiki 链接或 Docx token")
 
     # ── 占位符替换（Wiki 模板模式） ──
-    if placeholder_map and docx_token:
+    if placeholder_map is not None and docx_token:
         print(f"飞书 CLI: 替换文档占位符 ({len(placeholder_map)} 个)...")
         try:
-            _replace_placeholders_via_lark(docx_token, placeholder_map)
+            _replace_placeholders_via_lark(docx_token, placeholder_map, required_placeholders=required_placeholders)
         except LarkCliError as e:
             print(f"  占位符替换失败: {e}", file=sys.stderr)
-    elif placeholder_map and res.doc_url:
+            raise
+    elif placeholder_map is not None and res.doc_url:
         # 新建文档模式下的占位符替换
         print(f"飞书 CLI: 替换文档占位符 ({len(placeholder_map)} 个)...")
         try:
-            _replace_placeholders_via_lark(res.doc_url, placeholder_map)
+            _replace_placeholders_via_lark(res.doc_url, placeholder_map, required_placeholders=required_placeholders)
         except LarkCliError as e:
             print(f"  占位符替换失败: {e}", file=sys.stderr)
+            raise
 
     # ── 模式2: 新建文档（无 Wiki 模板时） ──
     if not wiki_config:
@@ -663,16 +670,20 @@ def lark_publish_release_document(
                 admin_email=FEISHU_ADMIN_EMAIL,
             )
             res.doc_url = r.get("url", "")
+            if not res.doc_url:
+                raise LarkCliError("创建结果缺少文档链接")
             if res.doc_url:
                 print(f"  文档: {res.doc_url}")
             # 新建模式也需要做占位符替换
-            if placeholder_map and res.doc_url and not wiki_config:
+            if placeholder_map is not None and res.doc_url and not wiki_config:
                 try:
-                    _replace_placeholders_via_lark(res.doc_url, placeholder_map)
+                    _replace_placeholders_via_lark(res.doc_url, placeholder_map, required_placeholders=required_placeholders)
                 except LarkCliError as e:
                     print(f"  占位符替换失败: {e}", file=sys.stderr)
+                    raise
         except LarkCliError as e:
             print(f"  创建失败: {e}", file=sys.stderr)
+            raise
 
     # ── 多维表格 ──
     if base_config:
@@ -714,7 +725,10 @@ def lark_publish_release_document(
     return res
 
 
-def _replace_placeholders_via_lark(doc_token: str, mapping: Dict[str, str]) -> None:
+def _replace_placeholders_via_lark(
+    doc_token: str, mapping: Dict[str, str], *,
+    required_placeholders: Optional[List[str]] = None,
+) -> None:
     """str_replace 纯文本替换 + block API 加超链接。
     模板格式100%保留，文件名变为可点击 NAS 链接。"""
     import secrets
@@ -756,7 +770,7 @@ def _replace_placeholders_via_lark(doc_token: str, mapping: Dict[str, str]) -> N
         _add_links(doc_token, link_items)
 
     print(f"  已替换 {replaced} 个占位符（{skipped} 个跳过）")
-    _verify_replacement(doc_token, mapping)
+    _verify_replacement(doc_token, mapping, required_placeholders=required_placeholders)
 
 
 def _add_links(doc_token: str, items: list) -> None:
@@ -824,22 +838,26 @@ def _add_links(doc_token: str, items: list) -> None:
         print("  WARN: link: no blocks updated", file=sys.stderr)
 
 
-def _verify_replacement(doc_token: str, mapping: Dict[str, str]) -> None:
-    """生成后自动验证：残留占位符 + 内容完整。只检查 mapping 中有值的 k。"""
+def _verify_replacement(
+    doc_token: str, mapping: Dict[str, str], *,
+    required_placeholders: Optional[List[str]] = None,
+) -> None:
+    """校验已提供值和必填字段；模板未使用的字段、缺省可选字段不阻断发布。"""
     import re as _re, time as _time
     _time.sleep(2)
     try:
         content = lark_fetch_doc(doc_url=doc_token)
-    except Exception:
+    except Exception as e:
         print("\n[VERIFY] 无法获取文档", file=sys.stderr)
-        return
+        raise LarkCliError(f"文档验证失败，无法获取文档: {e}") from e
 
     placeholder_re = _re.compile(r'\{\{[^}]+\}\}')
     remaining = placeholder_re.findall(content)
-    # 只看 mapping 中有值但未替换的
+    # 已提供的值和调用方声明的必填字段必须替换；其他残留仅告警。
     non_empty_keys = {k for k, v in mapping.items() if str(v).strip()}
-    real_remaining = [p for p in remaining if p in non_empty_keys]
-    only_empty = [p for p in remaining if p not in non_empty_keys]
+    required_keys = set(required_placeholders or [])
+    real_remaining = [p for p in remaining if p in non_empty_keys or p in required_keys]
+    only_empty = [p for p in remaining if p not in non_empty_keys and p not in required_keys]
 
     content_len = len(content)
     print()
@@ -863,5 +881,13 @@ def _verify_replacement(doc_token: str, mapping: Dict[str, str]) -> None:
             print(f'  无值跳过: {len(only_empty)} 个（如 debug 专属占位符）')
             for p in only_empty[:3]:
                 print(f'    - {p}')
-        print(f'  结论: 全部通过 [OK]')
+        if only_empty:
+            print('  结论: 必填字段通过，可选字段未提供 [WARN]')
+        else:
+            print(f'  结论: 全部通过 [OK]')
     print('=' * 50)
+    if real_remaining or content_len < 300:
+        raise LarkCliError("文档验证失败: " + (
+            "残留必填或已赋值占位符: " + ", ".join(sorted(set(real_remaining)))
+            if real_remaining else "内容异常短"
+        ))

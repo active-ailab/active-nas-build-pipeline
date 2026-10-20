@@ -2493,7 +2493,9 @@ def _pick_one(paths: List[Path], *, what: str) -> Path:
     return paths_sorted[0]
 
 
-def _split_artifacts_by_parity(*, src_dir: Path, dst_dir: Path, dry_run: bool) -> None:
+def _split_artifacts_by_parity(
+    *, src_dir: Path, dst_dir: Path, dry_run: bool, reset_destination: bool = False,
+) -> None:
     """debug&release 单任务产物归类：按文件名版本号末位奇偶拆分两个下载目录。
 
     Jenkins 端 pairRule：单任务（BUILD_RELEASE=debug&release）一个 run 同时产出
@@ -2504,6 +2506,14 @@ def _split_artifacts_by_parity(*, src_dir: Path, dst_dir: Path, dry_run: bool) -
     """
     if not src_dir.exists():
         return
+    if reset_destination:
+        source = src_dir.resolve()
+        destination = dst_dir.resolve()
+        if (source == destination or destination in source.parents
+                or source in destination.parents or destination == Path(destination.anchor)):
+            raise RuntimeError("Artifact split source/destination must be separate directories")
+        if dst_dir.exists() and not dry_run:
+            shutil.rmtree(dst_dir)
     re_ver_tail = re.compile(r"(\d+)\.(\d+)\.(\d+)\.(\d+)")
     moved = 0
     kept = 0
@@ -5622,7 +5632,7 @@ def main() -> int:
         parts: List[str] = []
         # 读取触发者信息用于用户归属
         operator = str(release_cfg_final.get("operator") or "").strip()
-        header = "Release pipeline complete"
+        header = "Release pipeline complete" if exit_code == 0 else "Release pipeline failed"
         if proj or ver:
             header += f": {proj} {ver}".rstrip()
         if stage:
@@ -5658,7 +5668,8 @@ def main() -> int:
 
             proj_info = f"{proj} {ver_tag}" if ver_tag else (proj or "")
             stage_info = f" ({stage})" if stage else ""
-            lines = [f"✅ 打包完成：{proj_info}{stage_info}"]
+            lines = [f"✅ 打包完成：{proj_info}{stage_info}" if exit_code == 0
+                     else f"❌ 发布失败：{proj_info}{stage_info}"]
             if feishu_final_url:
                 lines.append(f"📄 飞书文档：{feishu_final_url}")
             if release_url:
@@ -5707,7 +5718,7 @@ def main() -> int:
 
         _notify_base_stage(cfg, "发布完成", "成功" if int(exit_code) == 0 else "失败")
 
-        print("\nPipeline complete.")
+        print("\nPipeline complete." if exit_code == 0 else "\nPipeline failed.")
         return int(exit_code)
 
     # Map upload specs by name for convenience
@@ -5762,7 +5773,10 @@ def main() -> int:
         if single_task_mode and name == "release":
             dbg_out_dir = _resolve_cfg_path(builds["debug"]["download"]["output_dir"])
             print(f"Single-task mode: split artifacts by version parity -> debug dir: {dbg_out_dir}")
-            _split_artifacts_by_parity(src_dir=out_dir, dst_dir=dbg_out_dir, dry_run=args.dry_run)
+            _split_artifacts_by_parity(
+                src_dir=out_dir, dst_dir=dbg_out_dir, dry_run=args.dry_run,
+                reset_destination=not args.skip_download and overwrite,
+            )
 
         if name == _last_build:
             _notify_base_stage(cfg, "下载", "跳过" if args.skip_download else "成功")
@@ -6349,6 +6363,7 @@ def main() -> int:
             print("    python lark_cli_adapter.py setup", file=sys.stderr)
             print("=" * 70 + "\n", file=sys.stderr)
             feishu_status = "skipped (lark-cli not installed)"
+            return _finalize(1) if not args.dry_run else _finalize(0)
         else:
             # 确保认证
             if not args.dry_run:
@@ -6380,6 +6395,22 @@ def main() -> int:
                     print(f"Feishu placeholder mapping generated: {mp}")
             except Exception as e:
                 print(f"WARN: placeholder mapping failed: {e}", file=sys.stderr)
+                feishu_status = f"failed (placeholder mapping: {e})"
+                _notify_base_stage(cfg, "飞书文档", "失败")
+                return _finalize(1)
+
+            # 沿用 DSL 已声明的 required，并按本次实际运行范围检查。
+            # 模板不含的字段及可选制品不会因此阻断原有发布方式。
+            required_placeholders = []
+            if dsl_cfg is not None:
+                completed_runs = {r["name"] for r in run_summaries}
+                for key, rule in ((dsl_cfg.get("placeholders") or {}).get("mappings") or {}).items():
+                    if not isinstance(rule, dict) or not rule.get("required"):
+                        continue
+                    if rule.get("mode") == "nas_share":
+                        if args.skip_share or str(rule.get("run") or "release") not in completed_runs:
+                            continue
+                    required_placeholders.append(key)
 
             # 文档标题
             name_tmpl = str(feishu_cfg.get("name_template") or "{project}_{version}_{timestamp}_版本文档").strip()
@@ -6421,17 +6452,24 @@ def main() -> int:
 
             # ── 一键发布 ──
             feishu_oauth_cfg = feishu_cfg.get("oauth") if isinstance(feishu_cfg.get("oauth"), dict) else None
-            result = lark_publish_release_document(
-                title=doc_name,
-                markdown_content=md,
-                placeholder_map=mapping if mapping else None,
-                wiki_config=wiki_config,
-                base_config=base_config,
-                notification_chat_id=notification_chat_id,
-                notification_title=f"📦 {release_cfg_fei.get('project', '')} {release_cfg_fei.get('version', '')} 发布完成",
-                feishu_oauth_cfg=feishu_oauth_cfg,
-                dry_run=args.dry_run,
-            )
+            try:
+                result = lark_publish_release_document(
+                    title=doc_name,
+                    markdown_content=md,
+                    placeholder_map=mapping,
+                    wiki_config=wiki_config,
+                    base_config=base_config,
+                    notification_chat_id=notification_chat_id,
+                    notification_title=f"📦 {release_cfg_fei.get('project', '')} {release_cfg_fei.get('version', '')} 发布完成",
+                    feishu_oauth_cfg=feishu_oauth_cfg,
+                    required_placeholders=required_placeholders,
+                    dry_run=args.dry_run,
+                )
+            except Exception as e:
+                feishu_status = f"failed ({e})"
+                print(f"ERROR: 飞书文档生成失败: {e}", file=sys.stderr)
+                _notify_base_stage(cfg, "飞书文档", "失败")
+                return _finalize(1)
 
             feishu_final_url = result.doc_url or result.wiki_url or ""
             feishu_status = result.to_status_text()
@@ -6439,6 +6477,8 @@ def main() -> int:
                 _notify_base_stage(cfg, "飞书文档", "成功", doc_url=feishu_final_url)
             else:
                 _notify_base_stage(cfg, "飞书文档", "失败")
+                if not args.dry_run:
+                    return _finalize(1)
 
     else:
         if not feishu_enabled:

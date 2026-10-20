@@ -22,6 +22,8 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from functools import wraps
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -42,6 +44,36 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 # ── 运行中的任务追踪 ──────────────────────────────────
 _running_tasks: Dict[str, Dict[str, Any]] = {}
 _task_streams: Dict[str, queue.Queue] = {}  # SSE 实时日志流队列
+_submission_lock = threading.RLock()
+
+
+def _new_task_id(prefix: str) -> str:
+    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+
+def _protect_project_submission(func):
+    """原子检查并登记任务，防同项目共享配置/目录被并发覆盖。"""
+    @wraps(func)
+    def guarded(*args, **kwargs):
+        project = kwargs.get("project")
+        if project is None:
+            project = args[1] if func.__name__ == "_launch_skip_jenkins_task" else args[0]
+        if func.__name__ == "api_tscan_only":
+            project = (request.get_json(silent=True) or {}).get("device") or project
+        with _submission_lock:
+            for task in list(_running_tasks.values()):
+                if task.get("project") != project or task.get("task_type") == "changelog":
+                    continue
+                worker = task.get("thread")
+                # 内部 Wiki 重试发生在原线程末尾，此时原流水线已退出。
+                if worker is threading.current_thread():
+                    continue
+                active = task.get("status") in ("starting", "triggering", "running")
+                if ((worker is not None and worker.is_alive())
+                        or (active and not task.get("_restored"))):
+                    return jsonify({"ok": False, "error": f"项目 {project} 已有任务正在执行，请完成后重试"}), 409
+            return func(*args, **kwargs)
+    return guarded
 
 # ── 任务持久化文件（防服务器重启丢失） ─────────────────
 _RUNNING_TASKS_FILE = SCRIPT_DIR / "output" / "running_tasks.json"
@@ -102,6 +134,7 @@ def _restore_running_tasks():
             except Exception:
                 pass
         _running_tasks[tid] = {
+            "_restored": True,
             "project": entry.get("project", ""),
             "version": entry.get("version", ""),
             "user_id": entry.get("user_id", ""),
@@ -2818,6 +2851,7 @@ def api_version_detail(project: str, suffix: str):
 
 
 @app.route("/api/projects/<project>/release", methods=["POST"])
+@_protect_project_submission
 def api_release(project: str):
     """接收表单数据，生成配置文件，触发流水线"""
     try:
@@ -2978,7 +3012,7 @@ def api_release(project: str):
     cfg_path.write_text(json.dumps(base_cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     # 在后台线程中触发流水线
-    task_id = f"{project}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    task_id = _new_task_id(project)
     # 创建 SSE 日志流队列
     _task_streams[task_id] = queue.Queue()
     _running_tasks[task_id] = {
@@ -3147,6 +3181,7 @@ def _prewarm_lark_auth(task_id: str) -> bool:
         return False
 
 
+@_protect_project_submission
 def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: int = 0):
     """跳过 Jenkins 触发，直接用已有的 Jenkins build URL 跑下载→上传→文档流水线。
     支持可选 tscan_jenkins_url 用于 TSCAN 产物下载。
@@ -3286,7 +3321,7 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     cfg_path.write_text(json.dumps(base_cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     # 创建 Task 并直接跑 release_pipeline_run.py（跳过 jenkins_trigger_build.py）
-    task_id = f"{project}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    task_id = _new_task_id(project)
 
     skip_flags = form_data.get("skip_flags") or {}
     skip_dl = bool(skip_flags.get("skip_download"))
@@ -3406,31 +3441,6 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
                         _save_user_feishu_token(user_id, updated_cfg)
                     except Exception:
                         pass
-                # ── 自动重试：飞书 Wiki 授权失败时再跑一次"直接生成文档" ──
-                if (_running_tasks[task_id].get("wiki_failed")
-                        and _running_tasks[task_id].get("wiki_retry_count", 0) < 1):
-                    _push_log(task_id, '')
-                    _push_log(task_id, '>>> 检测到飞书 Wiki 授权失败，自动重试"直接生成文档"（重试 1/1）...')
-                    _push_log(task_id, '    等待 8 秒让飞书会话刷新 ...')
-                    time.sleep(8)
-                    # 防御性日志：显式打印重试将复用的 NAS 目录名，便于与主流程对照
-                    _rt_base = ((base_cfg.get("nas") or {}).get("remote") or {}).get("base_dir", "")
-                    _rt_variant = (base_cfg.get("release") or {}).get("variant", "")
-                    _push_log(task_id, f'    重试复用 NAS 目录（与主流程一致）: {_rt_base}/{_rt_variant}')
-                    try:
-                        new_resp = _launch_skip_jenkins_task(
-                            form_data, project,
-                            _wiki_retry_count=_running_tasks[task_id].get("wiki_retry_count", 0) + 1,
-                        )
-                        new_task_id = ""
-                        try:
-                            new_task_id = (new_resp.get_json() or {}).get("task_id", "")
-                        except Exception:
-                            pass
-                        _running_tasks[task_id]["wiki_retried_task_id"] = new_task_id
-                        _push_log(task_id, f'    重试任务已启动: {new_task_id}（飞书文档生成结果请在新任务查看）')
-                    except Exception as e:
-                        _push_log(task_id, f'❌ 自动重试失败: {e}')
             else:
                 if _running_tasks[task_id].get("status") != "terminated":
                     for s in _running_tasks[task_id]["steps"]:
@@ -3441,6 +3451,33 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
                 _running_tasks[task_id]["_finished_at"] = time.time()
                 _persist_running_tasks()
                 _push_log(task_id, f"❌ 流水线执行失败（退出码: {proc.returncode}）")
+            # ── 自动重试：飞书 Wiki 授权失败时再跑一次"直接生成文档" ──
+            if (_running_tasks[task_id].get("wiki_failed")
+                    and _running_tasks[task_id].get("status") != "terminated"
+                    and _running_tasks[task_id].get("wiki_retry_count", 0) < 1):
+                _push_log(task_id, '')
+                _push_log(task_id, '>>> 检测到飞书 Wiki 授权失败，自动重试"直接生成文档"（重试 1/1）...')
+                _push_log(task_id, '    等待 8 秒让飞书会话刷新 ...')
+                time.sleep(8)
+                # 防御性日志：显式打印重试将复用的 NAS 目录名，便于与主流程对照
+                _rt_base = ((base_cfg.get("nas") or {}).get("remote") or {}).get("base_dir", "")
+                _rt_variant = (base_cfg.get("release") or {}).get("variant", "")
+                _push_log(task_id, f'    重试复用 NAS 目录（与主流程一致）: {_rt_base}/{_rt_variant}')
+                try:
+                    with app.app_context():
+                        new_resp = _launch_skip_jenkins_task(
+                            form_data, project,
+                            _wiki_retry_count=_running_tasks[task_id].get("wiki_retry_count", 0) + 1,
+                        )
+                    new_task_id = ""
+                    try:
+                        new_task_id = (new_resp.get_json() or {}).get("task_id", "")
+                    except Exception:
+                        pass
+                    _running_tasks[task_id]["wiki_retried_task_id"] = new_task_id
+                    _push_log(task_id, f'    重试任务已启动: {new_task_id}（飞书文档生成结果请在新任务查看）')
+                except Exception as e:
+                    _push_log(task_id, f'❌ 自动重试失败: {e}')
         except subprocess.TimeoutExpired:
             _running_tasks[task_id]["status"] = "timeout"
             _running_tasks[task_id]["_finished_at"] = time.time()
@@ -3496,6 +3533,7 @@ def api_run_pipeline_direct(project: str):
 
 
 @app.route("/api/projects/<project>/tscan-only", methods=["POST"])
+@_protect_project_submission
 def api_tscan_only(project: str):
     """独立 TSCAN 构建：仅触发 TSCAN Jenkins 构建并跟踪进度"""
     try:
@@ -3545,10 +3583,10 @@ def api_tscan_only(project: str):
     # 不创建 bak（TSCAN/Changelog 独立构建不产生 bak）
 
     # 创建任务
-    task_id = f"{project}_tscan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    task_id = _new_task_id(f"{device}_tscan")
     _task_streams[task_id] = queue.Queue()
     _running_tasks[task_id] = {
-        "project": project,
+        "project": device,
         "user_id": (form_data.get("user_id") or "").strip(),
         "task_type": "tscan",
         "platform_select": cfg.get("platform_select", ""),
@@ -4251,7 +4289,7 @@ def api_start_changelog(project: str):
     except Exception:
         pass
 
-    task_id = f"changelog_{device}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    task_id = _new_task_id(f"changelog_{device}")
     _task_streams[task_id] = queue.Queue()
     _running_tasks[task_id] = {
         "project": device,

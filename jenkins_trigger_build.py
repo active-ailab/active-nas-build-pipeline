@@ -903,6 +903,21 @@ def _get_job_urls_from_platforms(cfg: Dict[str, Any]) -> Dict[str, str]:
     return jobs
 
 
+def _with_platform_select(params: Dict[str, Any], cfg: Dict[str, Any], job_url: str) -> Dict[str, Any]:
+    """统一 release/debug/TSCAN 的合并平台参数，其他 Jenkins job 保持原样。"""
+    if "HuamiOS_multi_platform" not in str(job_url):
+        return params
+    raw = (cfg.get("_tscan") or {}).get("platform") or cfg.get("platform_select")
+    if not raw:
+        raw = _get_enabled_platforms(cfg)
+    values = raw.split(",") if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
+    selected = [str(v).strip().lower() for v in values
+                if str(v).strip().lower() in ("mhs003", "mhs003s")]
+    if not selected:
+        return params
+    return {**params, "PLATFORM_SELECT": ",".join(dict.fromkeys(selected))}
+
+
 def _maybe_trigger_changelog_async(
     *,
     cfg_path: Path,
@@ -1166,6 +1181,7 @@ def _run_tscan_standalone(args, cfg, cfg_path, auth, crumb, opener) -> int:
             tscan_params["FCT_VERSION_NAME"] = ver3
 
     _tscan_adjust_version(tscan_params)
+    tscan_params = _with_platform_select(tscan_params, cfg, tscan_job_url)
 
     print(f"\n== Trigger TSCAN (standalone) ==")
     print(f"  Job URL: {tscan_job_url}")
@@ -1386,41 +1402,6 @@ def main() -> int:
             for job_key, job_url in jobs_to_trigger.items():
                 platform_key = None if job_key == "default" else job_key
 
-                # Prepare platform_select handling: prefer explicit `platform_select` in cfg;
-                # if missing, derive from `Platform` entries with value YES.
-                raw_platform_select = cfg.get("platform_select", None)
-                if raw_platform_select is None:
-                    plat_cfg = cfg.get("Platform") or {}
-                    if isinstance(plat_cfg, dict):
-                        raw_platform_select = [k for k, v in plat_cfg.items() if str(v or "").strip().upper() == "YES"]
-                    else:
-                        raw_platform_select = []
-
-                # Normalize into a list of lowercase tokens.
-                if isinstance(raw_platform_select, str):
-                    raw_list = [x.strip() for x in raw_platform_select.split(",") if x.strip()]
-                elif isinstance(raw_platform_select, list):
-                    raw_list = raw_platform_select
-                else:
-                    raw_list = []
-                platform_select_list = [str(x).strip().lower() for x in raw_list if str(x).strip()]
-
-                def _maybe_add_platform_select(params: dict) -> dict:
-                    # 只要目标 job 是 multi_platform、且 config 有 platform_select=mhs003/mhs003s，
-                    # 就传 PLATFORM_SELECT（不再依赖 job_key 判断）。
-                    is_multi_job = "HuamiOS_multi_platform" in str(job_url or "")
-                    if not is_multi_job:
-                        return params
-                    if not platform_select_list:
-                        return params
-                    # 只保留 mhs* 令牌，按配置里的单/多选原样传递
-                    mhs_list = [p for p in platform_select_list if p.startswith("mhs")]
-                    if not mhs_list:
-                        return params
-                    params = dict(params)
-                    params["PLATFORM_SELECT"] = ",".join(mhs_list)
-                    return params
-
                 # ── 读取触发模式 ──
                 triggers_cfg = _get_triggers_cfg(cfg)
                 trigger_mode = str(triggers_cfg.get("modes", "async") or "async").strip().lower()
@@ -1437,7 +1418,7 @@ def main() -> int:
                 single_task_mode = (build_release_mode == "single")
                 rel_raw = _get_trigger_params(cfg, "release", platform_key)
                 rel_params = _expand_jenkins_params(raw_params=rel_raw, full_cfg=cfg)
-                rel_params = _maybe_add_platform_select(rel_params)
+                rel_params = _with_platform_select(rel_params, cfg, job_url)
                 if single_task_mode:
                     # 一个任务同时编译 release/debug，BUILD_RELEASE 覆写为 debug&release
                     rel_params = dict(rel_params)
@@ -1515,7 +1496,7 @@ def main() -> int:
                     print(f"\n== Trigger DEBUG ({job_key}) ==")
                     dbg_raw = _get_trigger_params(cfg, "debug", platform_key)
                     dbg_params = _expand_jenkins_params(raw_params=dbg_raw, full_cfg=cfg)
-                    dbg_params = _maybe_add_platform_select(dbg_params)
+                    dbg_params = _with_platform_select(dbg_params, cfg, job_url)
                     q_dbg = _trigger_build(
                         job_url=job_url,
                         base_url=base_url,
@@ -1540,6 +1521,7 @@ def main() -> int:
                         if tscan_job_url:
                             tscan_params = _expand_jenkins_params(raw_params=dict(tscan_raw), full_cfg=cfg)
                             _tscan_adjust_version(tscan_params)
+                            tscan_params = _with_platform_select(tscan_params, cfg, tscan_job_url)
                             print(f"\n== Trigger TSCAN ({job_key}) — 与 release/debug 并行 ==")
                             sys.stdout.flush()
                             q_tscan = _trigger_build(
