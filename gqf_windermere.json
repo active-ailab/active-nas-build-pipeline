@@ -19,8 +19,7 @@
       "release": {
         "parameters": {
           "HMI_CORE_MM_OWNER_DEP": "2",
-          "AUTH_CFG_AUTO_BINDING": "NO",
-          "FW_VER_STRATEGY_ENV": "none"
+          "AUTH_CFG_AUTO_BINDING": "NO"
         }
       },
       "debug": {
@@ -33,7 +32,7 @@
           "HMI_CORE_MM_OWNER_DEP": "2"
         }
       },
-      "job_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/",
+      "job_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/",
       "modes": "async"
     },
     "builds": {
@@ -122,7 +121,6 @@
     "prev_version_name": "6.3.25.2",
     "prev_version_code": "202609012253",
     "build_mode": "OTA,OTA_SLEEP,FCT,BOOT,RECOVERY",
-    "fw_ver_strategy_env": "none",
     "build_tscan": "no",
     "auto_bind_after_upgrade": "no",
     "hmi_core_mm_owner_dep": ""

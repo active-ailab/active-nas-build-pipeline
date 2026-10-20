@@ -2493,6 +2493,45 @@ def _pick_one(paths: List[Path], *, what: str) -> Path:
     return paths_sorted[0]
 
 
+def _split_artifacts_by_parity(*, src_dir: Path, dst_dir: Path, dry_run: bool) -> None:
+    """debug&release 单任务产物归类：按文件名版本号末位奇偶拆分两个下载目录。
+
+    Jenkins 端 pairRule：单任务（BUILD_RELEASE=debug&release）一个 run 同时产出
+    两套版本（如 rocky 1.2.1.11=release / 1.2.1.10=debug/monkey）。
+    - 版本号末位为奇数 -> release 产物，留在 src_dir（release 下载目录）
+    - 版本号末位为偶数 -> debug/monkey 产物，移动到 dst_dir（debug 下载目录）
+    - 文件名中不含四段版本号的文件不参与归类，留在 src_dir
+    """
+    if not src_dir.exists():
+        return
+    re_ver_tail = re.compile(r"(\d+)\.(\d+)\.(\d+)\.(\d+)")
+    moved = 0
+    kept = 0
+    for p in sorted(src_dir.iterdir()):
+        if not p.is_file():
+            continue
+        m = re_ver_tail.search(p.name)
+        if not m:
+            kept += 1
+            continue
+        tail = int(m.group(4))
+        if tail % 2 == 0:
+            target = dst_dir / p.name
+            print(f"  [split] debug/monkey: {p.name} -> {dst_dir}")
+            if not dry_run:
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    try:
+                        target.unlink()
+                    except OSError:
+                        pass
+                shutil.move(str(p), str(target))
+            moved += 1
+        else:
+            kept += 1
+    print(f"Split by parity: {moved} debug/monkey file(s) -> {dst_dir}, {kept} release file(s) kept in {src_dir}")
+
+
 def _prepare_release_extract(*, input_dir: Path, workspace_dir: Path, clean: bool, dry_run: bool, project: str = "") -> Path:
     """Extract two target files from nested tgz/tar archives.
 
@@ -4599,6 +4638,37 @@ class SynologyDsmClient:
             raise RuntimeError(f"Create share link missing url for {path}: {data}")
         return str(url_value)
 
+    def list_files(self, *, folder_path: str) -> List[str]:
+        """列远端目录的顶层文件名（不含子目录递归）。
+
+        用于 skip-upload 模式下本地 payload 目录缺失/被清理时，
+        直接从 NAS 远端目录取文件清单，再逐个 create_share_link 补链接。
+        """
+        if not self._sid:
+            raise RuntimeError("DSM client not logged in")
+
+        params = {
+            "api": "SYNO.FileStation.List",
+            "version": "2",
+            "method": "list",
+            "folder_path": folder_path,
+            # additional 可省略；此处仅需文件名，不拉取 size/time 等元数据。
+            "_sid": f'"{self._sid}"',
+        }
+        url = f"{self._base_url}/webapi/entry.cgi?{urllib.parse.urlencode(params)}"
+        data = self._request_json(url)
+        if not data.get("success"):
+            raise RuntimeError(f"DSM list files failed for {folder_path}: {data}")
+        files = (data.get("data") or {}).get("files") or []
+        names: List[str] = []
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            name = str(f.get("name") or "").strip()
+            if name:
+                names.append(name)
+        return names
+
 
 def _curl_bytes(
     *,
@@ -5098,6 +5168,43 @@ def _generate_and_print_share_links(
     return links_by_rel
 
 
+def _generate_share_links_from_remote(
+    *,
+    dsm_base_url: str,
+    dsm_verify_tls: bool,
+    timeout_sec: int,
+    username: str,
+    password: str,
+    remote_dir: str,
+) -> Dict[str, str]:
+    """skip-upload 兜底：本地 payload 目录缺失/为空时，从 DSM 远端列顶层文件并逐个建分享链接。
+
+    返回 {文件名: 分享链接}。用于「直接生成文档」补跑且本地产物已被 LRU 清理的场景：
+    NAS 远端文件仍在，但本地已无文件可遍历，此时按远端目录补齐链接，避免占位符全空。
+    """
+    remote_dir = remote_dir.rstrip("/")
+    print(f"Share links (remote fallback): logging into DSM API: {dsm_base_url}")
+    client = SynologyDsmClient(dsm_base_url, verify_tls=dsm_verify_tls, timeout_sec=timeout_sec)
+    client.login(username=username, password=password)
+    links: Dict[str, str] = {}
+    try:
+        names = client.list_files(folder_path=remote_dir)
+        if not names:
+            print(f"WARN: no files listed on remote dir: {remote_dir}")
+            return {}
+        for idx, fname in enumerate(names, start=1):
+            remote_path = f"{remote_dir}/{fname}"
+            try:
+                share_url = client.create_share_link(path=remote_path)
+                print(f"  [{idx}/{len(names)}] {fname}\n    {share_url}")
+                links[fname] = share_url
+            except Exception as e:
+                print(f"  [{idx}/{len(names)}] {fname}\n    ERROR: {e}")
+    finally:
+        client.logout()
+    return links
+
+
 def _normalize_extra_local_dirs(value: Any) -> List[str]:
     if value is None:
         return []
@@ -5494,6 +5601,17 @@ def main() -> int:
     builds = cfg["jenkins"]["builds"]
     run_summaries: List[Dict[str, Any]] = []
 
+    # debug&release 单任务模式（MHS 二合一）：一个 Jenkins run 同时产出
+    # release（版本号末尾奇数）与 debug/monkey（末尾偶数）两套产物。
+    # 处理方式：release run 下载全部产物后按版本号奇偶拆成两个下载目录，
+    # debug 不再单独下载，后续解压/上传/文档复用现有双 run 链路。
+    build_release_mode = str((cfg.get("vars") or {}).get("build_release_mode") or "").strip().lower()
+    single_task_mode = (build_release_mode == "single")
+    if single_task_mode:
+        rel_url_single = str((builds.get("release") or {}).get("build_url") or "").strip()
+        if rel_url_single:
+            builds.setdefault("debug", {})["build_url"] = rel_url_single
+
     def _finalize(exit_code: int) -> int:
         # Build a concise final message.
         release_cfg_final = cfg.get("release") or {}
@@ -5600,7 +5718,11 @@ def main() -> int:
 
     # 多维表格流水：release/debug 会各跑一次 run_one，但表里没有「构建名」列，
     # 只在最后一个 build 完成时记一行，避免重复行。
-    _last_build = "release" if args.only in ("all", "release") else "debug"
+    # 单任务模式执行顺序为 release -> debug，最后完成的是 debug。
+    if single_task_mode:
+        _last_build = "debug" if args.only in ("all", "debug") else "release"
+    else:
+        _last_build = "release" if args.only in ("all", "release") else "debug"
 
     def run_one(name: str) -> None:
         _run_t0 = time.time()
@@ -5616,20 +5738,31 @@ def main() -> int:
         print(f"Download -> {out_dir}")
 
         if not args.skip_download:
-            jenkins_download_artifacts(
-                build_url=build_url,
-                out_dir=out_dir,
-                auth=JenkinsAuth(username=j_user, password=j_pass),
-                include_globs=include_globs,
-                exclude_globs=exclude_globs,
-                overwrite=overwrite,
-                verify_tls=True,  # Jenkins is public TLS; keep verify on
-                timeout_sec=jenkins_timeout_sec,
-                dry_run=args.dry_run,
-                show_progress=show_progress,
-            )
+            if single_task_mode and name == "debug":
+                # 单任务模式：debug 产物已由 release run 下载后按版本号奇偶归类到此目录
+                print("Single-task mode: debug/monkey artifacts already split from release run; skip download.")
+            else:
+                jenkins_download_artifacts(
+                    build_url=build_url,
+                    out_dir=out_dir,
+                    auth=JenkinsAuth(username=j_user, password=j_pass),
+                    include_globs=include_globs,
+                    exclude_globs=exclude_globs,
+                    overwrite=overwrite,
+                    verify_tls=True,  # Jenkins is public TLS; keep verify on
+                    timeout_sec=jenkins_timeout_sec,
+                    dry_run=args.dry_run,
+                    show_progress=show_progress,
+                )
         else:
             print("Skip Jenkins download.")
+
+        # 单任务模式：release run 下载完成后，按版本号末位奇偶把 debug/monkey
+        # 产物移动到 debug 下载目录（奇数=release 留在原目录）。
+        if single_task_mode and name == "release":
+            dbg_out_dir = _resolve_cfg_path(builds["debug"]["download"]["output_dir"])
+            print(f"Single-task mode: split artifacts by version parity -> debug dir: {dbg_out_dir}")
+            _split_artifacts_by_parity(src_dir=out_dir, dst_dir=dbg_out_dir, dry_run=args.dry_run)
 
         if name == _last_build:
             _notify_base_stage(cfg, "下载", "跳过" if args.skip_download else "成功")
@@ -5719,8 +5852,20 @@ def main() -> int:
                             remote_dir=remote_dir,
                             local_dir=Path(local_dir).expanduser().resolve(),
                         )
+                        # 本地 payload 目录可能已被 LRU 清理删除，此时远端仍有文件：
+                        # 回退为直接列远端顶层目录逐个建链接，避免 nas_share 占位符全空。
+                        if not share_links_main:
+                            share_links_main = _generate_share_links_from_remote(
+                                dsm_base_url=dsm_base_url,
+                                dsm_verify_tls=dsm_verify_tls,
+                                timeout_sec=nas_timeout_sec,
+                                username=dsm_user,
+                                password=dsm_pass,
+                                remote_dir=remote_dir,
+                            )
                         for extra in extra_local_dirs:
                             extra_path = Path(str(extra)).expanduser().resolve()
+                            # extra 目录本地缺失时无需再列远端：main 兜底已覆盖远端顶层全部文件。
                             share_links_extra[str(extra_path)] = _generate_and_print_share_links(
                                 dsm_base_url=dsm_base_url,
                                 dsm_verify_tls=dsm_verify_tls,
@@ -6049,11 +6194,22 @@ def main() -> int:
             }
         )
 
-    if args.only in ("all", "debug"):
-        run_one("debug")
-    if args.only in ("all", "release"):
-        print(f"Switching to release variant...")
-        run_one("release")
+    if single_task_mode:
+        # 单任务模式：release 先跑（下载全部产物并按奇偶归类），debug 后跑（跳过下载）
+        if args.only == "debug":
+            print("WARN: single-task mode with --only debug expects artifacts already split "
+                  "into the debug download dir (run --only all or --only release first).")
+        if args.only in ("all", "release"):
+            print(f"Switching to release variant...")
+            run_one("release")
+        if args.only in ("all", "debug"):
+            run_one("debug")
+    else:
+        if args.only in ("all", "debug"):
+            run_one("debug")
+        if args.only in ("all", "release"):
+            print(f"Switching to release variant...")
+            run_one("release")
     # ── TSCAN 产物上传和分享链接（独立于 release/debug builds）──
     if args.only in ("all", "release"):
         # 确定 TSCAN 产物目录

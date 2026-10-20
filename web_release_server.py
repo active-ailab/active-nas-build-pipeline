@@ -929,9 +929,10 @@ _pending_builds: Dict[str, dict] = {}
 
 # 支持的设备名称列表
 _FEISHU_KNOWN_DEVICES = {
-    # NXP595/Apollo4
+    # NXP595/Apollo4/Apollo5
     "stuttgart", "galaxy", "toulouse", "toulouseh", "andes", "andesw",
     "berlin", "cheetah", "swordfish", "swift", "monaco", "vienna", "vienna2025",
+    "meru", "fuji",
     # MHS003
     "pike", "warsaw", "windermere", "cologne", "geneva", "lyon",
     "makalu", "matterhorn", "rimo", "rocky", "milan", "milan_64m",
@@ -2478,7 +2479,6 @@ def _build_new_project_template(project_name: str) -> OrderedDict:
         ("release", OrderedDict([
             ("parameters", OrderedDict([
                 ("AUTH_CFG_AUTO_BINDING", "NO"),
-                ("FW_VER_STRATEGY_ENV", "none"),
             ])),
         ])),
     ])
@@ -2569,8 +2569,9 @@ def api_add_platform_device():
     # 检查设备是否已存在该平台列表中
     # platformDevices 的结构：  "MHS003": [ "pike", "warsaw", ... ],
     plat_key = _re.escape(platform)
+    # 平台 key 是带引号字符串（如 "MHS003"、"MHS003S"、"NXP595/Apollo4/Apollo5"），正则同时兼容裸标识符
     pattern = _re.compile(
-        rf'(^\s*{plat_key}\s*:\s*\[)([^\]]*)(\])',
+        rf'(^\s*["\']?{plat_key}["\']?\s*:\s*\[)([^\]]*)(\])',
         _re.MULTILINE
     )
     m = pattern.search(content)
@@ -2698,7 +2699,7 @@ def api_add_object_branch():
 
 def _get_jenkins_platform_devices(platform: str) -> List[str]:
     normalized = platform.strip().lower()
-    if normalized in ('nxp595', 'apollo4', 'nxp595/apollo4'):
+    if normalized in ('nxp595', 'apollo4', 'apollo5', 'nxp595/apollo4', 'nxp595/apollo4/apollo5'):
         url = 'https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/build?delay=0sec'
     elif normalized in ('mhs003', 'mhs003s'):
         url = 'https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/build?delay=0sec'
@@ -2737,7 +2738,9 @@ def _get_jenkins_platform_devices(platform: str) -> List[str]:
         fallback = {
             'nxp595': ['matterhorn', 'pamir', 'lyon'],
             'apollo4': ['matterhorn', 'pamir', 'lyon'],
+            'apollo5': ['matterhorn', 'pamir', 'lyon'],
             'nxp595/apollo4': ['matterhorn', 'pamir', 'lyon'],
+            'nxp595/apollo4/apollo5': ['matterhorn', 'pamir', 'lyon'],
             'mhs003': ['rocky', 'geneva', 'pike'],
             'mhs003s': ['atlas', 'alps'],
         }

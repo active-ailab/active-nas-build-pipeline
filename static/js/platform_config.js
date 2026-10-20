@@ -1,5 +1,5 @@
 const platformDevices = {
-  "NXP595/Apollo4": [
+  "NXP595/Apollo4/Apollo5": [
     "stuttgart",
     "galaxy",
     "toulouse",
@@ -13,8 +13,10 @@ const platformDevices = {
     "monaco",
     "vienna",
     "vienna2025",
+    "meru",
+    "fuji",
   ],
-  MHS003: [
+  "MHS003": [
     "pike",
     "warsaw",
     "windermere",
@@ -32,23 +34,26 @@ const platformDevices = {
     "rome_64m",
     "seattle",
   ],
-  MHS003S: ["oslo", "munich", "dublin", "atlas"],
+  "MHS003S": ["oslo", "munich", "dublin", "atlas"],
 };
 
 const platformJenkinsJobUrl = {
-  "NXP595/Apollo4":
+  "NXP595/Apollo4/Apollo5":
     "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/",
-  // MHS003:  "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/",
-  MHS003:
-    "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/",
-  MHS003S:
+  "MHS003":
+    "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/",
+  "MHS003S":
     "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/",
 };
 
-const platformSelectValue = {
-  MHS003: "mhs003",
-  MHS003S: "mhs003s",
+// 平台 → PLATFORM_SELECT（与 platformJenkinsJobUrl 一一对应）。
+// MHS003 → mhs003、MHS003S → mhs003s，都走 HuamiOS_multi_platform；NXP 不传（空字符串）。
+const platformSelectByPlatform = {
+  "NXP595/Apollo4/Apollo5": "",
+  "MHS003": "mhs003",
+  "MHS003S": "mhs003s",
 };
+
 const objectBranch = {
   "stuttgart": [
     "releases/stuttgart/ota"

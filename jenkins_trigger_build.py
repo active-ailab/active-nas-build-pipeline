@@ -869,10 +869,11 @@ def _get_job_url_for_platform(cfg: Dict[str, Any], key: str) -> str:
         return str(jm.get(key)).strip()
 
     defaults = {
-        "MHS003": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3",
+        "MHS003": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/",
         "MHS003S": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/",
         "NXP595": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/",
         "APOLLO4": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/",
+        "APOLLO5": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS/",
         "MHS_MULTI": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/",
     }
     return defaults.get(key, str(tcfg.get("job_url") or "").strip())
@@ -896,6 +897,8 @@ def _get_job_urls_from_platforms(cfg: Dict[str, Any]) -> Dict[str, str]:
         jobs["NXP595"] = _get_job_url_for_platform(cfg, "NXP595")
     if "APOLLO4" in enabled_plats and "NXP595" not in jobs:
         jobs["APOLLO4"] = _get_job_url_for_platform(cfg, "APOLLO4")
+    if "APOLLO5" in enabled_plats and "NXP595" not in jobs:
+        jobs["APOLLO5"] = _get_job_url_for_platform(cfg, "APOLLO5")
 
     return jobs
 
@@ -1150,7 +1153,6 @@ def _run_tscan_standalone(args, cfg, cfg_path, auth, crumb, opener) -> int:
         "BUILD_RELEASE":            "release",
         "HMI_CORE_MM_OWNER_DEP":    hmi_dep,
         "AUTH_CFG_AUTO_BINDING":    "NO",
-        "FW_VER_STRATEGY_ENV":      "none",
         "BUILD_REASON":             "开发版本",
         "BUILD_ARGUMENT":           "测试",
         "TEMPKEY":                  "否",
@@ -1404,15 +1406,14 @@ def main() -> int:
                 platform_select_list = [str(x).strip().lower() for x in raw_list if str(x).strip()]
 
                 def _maybe_add_platform_select(params: dict) -> dict:
-                    # Only add PLATFORM_SELECT when triggering the multi-platform job
-                    # (MHS003S or MHS_MULTI) and when the config requests any MHS entries.
-                    jobs_using_multi = (job_key == "MHS003S" or job_key == "MHS_MULTI")
-                    if not jobs_using_multi:
+                    # 只要目标 job 是 multi_platform、且 config 有 platform_select=mhs003/mhs003s，
+                    # 就传 PLATFORM_SELECT（不再依赖 job_key 判断）。
+                    is_multi_job = "HuamiOS_multi_platform" in str(job_url or "")
+                    if not is_multi_job:
                         return params
                     if not platform_select_list:
                         return params
-                    # only include mhs* tokens for the multi-platform job and preserve
-                    # single vs multi selection as configured by the user
+                    # 只保留 mhs* 令牌，按配置里的单/多选原样传递
                     mhs_list = [p for p in platform_select_list if p.startswith("mhs")]
                     if not mhs_list:
                         return params
@@ -1430,9 +1431,17 @@ def main() -> int:
                     print(f"\n== Trigger mode: ASYNC (Release + Debug parallel) ==")
 
                 print(f"\n== Trigger RELEASE ({job_key}) ==")
+                # debug&release 单任务模式（multi_platform 二合一）：
+                # 仅当项目配置 vars.build_release_mode=single 时生效（MHS 二合一专用，NXP 不配置走原双任务逻辑）
+                build_release_mode = str((cfg.get("vars") or {}).get("build_release_mode") or "").strip().lower()
+                single_task_mode = (build_release_mode == "single")
                 rel_raw = _get_trigger_params(cfg, "release", platform_key)
                 rel_params = _expand_jenkins_params(raw_params=rel_raw, full_cfg=cfg)
                 rel_params = _maybe_add_platform_select(rel_params)
+                if single_task_mode:
+                    # 一个任务同时编译 release/debug，BUILD_RELEASE 覆写为 debug&release
+                    rel_params = dict(rel_params)
+                    rel_params["BUILD_RELEASE"] = "debug&release"
                 q_rel = _trigger_build(
                     job_url=job_url,
                     base_url=base_url,
@@ -1501,21 +1510,23 @@ def main() -> int:
                         # Save config with release build_url
                         _atomic_write_json(cfg_path, cfg, backup=not bool(args.no_backup))
 
-                print(f"\n== Trigger DEBUG ({job_key}) ==")
-                dbg_raw = _get_trigger_params(cfg, "debug", platform_key)
-                dbg_params = _expand_jenkins_params(raw_params=dbg_raw, full_cfg=cfg)
-                dbg_params = _maybe_add_platform_select(dbg_params)
-                q_dbg = _trigger_build(
-                    job_url=job_url,
-                    base_url=base_url,
-                    auth=auth,
-                    parameters=dbg_params,
-                    crumb=crumb,
-                    timeout_sec=int(args.request_timeout_sec),
-                    dry_run=bool(args.dry_run),
-                    opener=opener,
-                )
-                queue_map[f"{job_key}.debug"] = q_dbg
+                if not single_task_mode:
+                    # debug&release 单任务模式下不再单独触发 debug（一个任务同时编译两个版本）
+                    print(f"\n== Trigger DEBUG ({job_key}) ==")
+                    dbg_raw = _get_trigger_params(cfg, "debug", platform_key)
+                    dbg_params = _expand_jenkins_params(raw_params=dbg_raw, full_cfg=cfg)
+                    dbg_params = _maybe_add_platform_select(dbg_params)
+                    q_dbg = _trigger_build(
+                        job_url=job_url,
+                        base_url=base_url,
+                        auth=auth,
+                        parameters=dbg_params,
+                        crumb=crumb,
+                        timeout_sec=int(args.request_timeout_sec),
+                        dry_run=bool(args.dry_run),
+                        opener=opener,
+                    )
+                    queue_map[f"{job_key}.debug"] = q_dbg
 
                 # ── 触发 TSCAN（与 release/debug 并行） ──
                 build_tscan_enabled = str(cfg.get("vars", {}).get("build_tscan") or "").strip().lower() == "yes"

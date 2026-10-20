@@ -432,7 +432,7 @@ const buildContentOptions = [
   { value: 'RECOVERY', label: 'RECOVERY', defaultChecked: true },
   { value: 'HWTEST', label: 'HWTEST', defaultChecked: false }
 ];
-const versionThreePartRegex = /^\d+\.\d+\.\d+$/; 
+const versionThreePartRegex = /^\d+\.\d+\.\d+$/;
 
 const publishTypeMap = { oldProject: "基于历史版本参数发版", newProject: "重新填写新项目参数发版", skipJenkins: "版本编译完成直接生成文档", changelog: "生成版本差分 changelog", tscan: "基于历史版本构建 TSCAN" };
 const versionRegex = /^\d+\.\d+\.\d+\.\d+$/;
@@ -525,12 +525,41 @@ function updateStepStatus(c, t) {
   }
 }
 
-function toggleFwVerStrategyVisibility() {
-  const isMhs = selectedPlatform === 'MHS003/MHS003S';
-  const fwVerWrap = document.getElementById('fwVerStrategyWrap');
-  const final7Wrap = document.getElementById('final7FwVerStrategyWrap');
-  if (fwVerWrap) { fwVerWrap.classList.toggle('hidden', !isMhs); }
-  if (final7Wrap) { final7Wrap.classList.toggle('hidden', !isMhs); }
+function toggleBuildReleaseModeVisibility() {
+  const isMhs = isMhsPlatform();
+  // debug&release 触发方式 radio：仅 MHS 平台显示；NXP 强制回到「分开触发」（保持原有双任务逻辑）
+  const buildReleaseWrap = document.getElementById('buildReleaseModeWrap');
+  if (buildReleaseWrap) {
+    buildReleaseWrap.classList.toggle('hidden', !isMhs);
+    if (!isMhs) {
+      const splitRadio = document.querySelector('input[name="build_release_mode"][value="split"]');
+      if (splitRadio) splitRadio.checked = true;
+      handleBuildReleaseModeChange();
+    }
+  }
+}
+
+// ================== debug&release 单任务模式（MHS 二合一专用） ==================
+function getBuildReleaseMode() {
+  const el = document.querySelector('input[name="build_release_mode"]:checked');
+  return (el && el.value) || 'split';
+}
+
+function isMhsPlatform() {
+  return selectedPlatform === 'MHS003' || selectedPlatform === 'MHS003S';
+}
+
+function isBuildReleaseSingle() {
+  return isMhsPlatform() && getBuildReleaseMode() === 'single';
+}
+
+function handleBuildReleaseModeChange() {
+  const verDebugWrap = document.getElementById('verDebugWrap');
+  const single = getBuildReleaseMode() === 'single';
+  if (verDebugWrap) verDebugWrap.classList.toggle('hidden', single);
+  const verReleaseErrorTip = document.getElementById('ver_releaseErrorTip');
+  if (verReleaseErrorTip) verReleaseErrorTip.textContent = '格式错误，例：1.3.0';
+  updateVersionModeHint();
 }
 
 function nextStep1() {
@@ -540,7 +569,7 @@ function nextStep1() {
     return;
   }
   const p = document.querySelector('input[name="platform"]:checked'); if(!p){ alert('请选择设备平台'); return; }
-  selectedPlatform = p.value; toggleFwVerStrategyVisibility();
+  selectedPlatform = p.value; toggleBuildReleaseModeVisibility();
   const currentPlatformEl = document.getElementById('currentPlatform');
   if (currentPlatformEl) currentPlatformEl.textContent = selectedPlatform;
   const success = fillDeviceList(selectedPlatform);
@@ -711,9 +740,9 @@ function selectVersion(e, project, suffix){
               diff_name: vars.prev_version_name || '',
               diff_code: vars.prev_version_code || '',
               build_content: vars.build_mode || '',
-              fw_ver_strategy_env: vars.fw_ver_strategy_env || 'none',
               build_tscan: vars.build_tscan || 'no',
               auto_bind_after_upgrade: vars.auto_bind_after_upgrade || 'no',
+              build_release_mode: vars.build_release_mode || 'split',
               hmi_core_mm_owner_dep: vars.hmi_core_mm_owner_dep || ''
             }
           };
@@ -826,10 +855,13 @@ async function nextStep4() {
     updateFctVersionCustomUI();
     if (diffNameEl) diffNameEl.value = b.diff_name || '';
     if (diffCodeEl) diffCodeEl.value = b.diff_code || '';
-    const fwVerEnvEl = document.getElementById('fw_ver_strategy_env'); if (fwVerEnvEl) fwVerEnvEl.value = b.fw_ver_strategy_env || 'none';
     const tscanEl = document.getElementById('build_tscan'); if (tscanEl) tscanEl.checked = b.build_tscan === 'yes';
     const autoBindEl = document.getElementById('auto_bind_after_upgrade'); if (autoBindEl) autoBindEl.checked = b.auto_bind_after_upgrade === 'yes';
     const hmiDepEl = document.getElementById('hmi_core_mm_owner_dep'); if (hmiDepEl) hmiDepEl.value = b.hmi_core_mm_owner_dep || '';
+    // 触发方式 radio 回填（debug&release 单任务 / 分开触发），并联动 ver_debug 显隐
+    const buildReleaseModeRadio = document.querySelector(`input[name="build_release_mode"][value="${b.build_release_mode || 'split'}"]`);
+    if (buildReleaseModeRadio) buildReleaseModeRadio.checked = true;
+    handleBuildReleaseModeChange();
     initBuildContentCheckboxes(b.build_content || ''); updateBuildContentInput();
   }
   setBuildParamPlaceholder(); resetEditState();
@@ -854,6 +886,20 @@ async function nextStep4() {
   fillHistoryVersionDetail('paramStep');
 }
 
+// 统一创建 TomSelect 实例，并关闭其内部搜索输入框的浏览器密码自动填充（autofill）。
+// 背景：Jenkins 登录弹窗保存凭据后，Chrome/Edge 会把用户名自动填进页面上第一个可输入的
+// 文本框（即 TomSelect 的 control_input），导致「目标项目/发版分支/Wiki Token」等下拉被误填。
+function makeTomSelect(selector, options) {
+  const ts = new TomSelect(selector, options);
+  if (ts && ts.control_input) {
+    ts.control_input.setAttribute('autocomplete', 'nope');
+    ts.control_input.setAttribute('autocapitalize', 'off');
+    ts.control_input.setAttribute('autocorrect', 'off');
+    ts.control_input.setAttribute('spellcheck', 'false');
+  }
+  return ts;
+}
+
 // ================== 发版分支 ：TomSelect 下拉 + 输入 + 校验 + 保存 ==================
 let branchTomSelect = null;
 
@@ -870,7 +916,7 @@ function initBranchSelect() {
     branchTomSelect.destroy();
     branchTomSelect = null;
   }
-  branchTomSelect = new TomSelect('#publishBranch', {
+  branchTomSelect = makeTomSelect('#publishBranch', {
     options: [],
     placeholder: '选择或输入发版分支...',
     maxOptions: null,
@@ -1170,7 +1216,9 @@ function updateBuildContentInput() {
 function checkThreePartVersionFormat(elId) {
   const el = document.getElementById(elId); const errorTipId = `${elId}ErrorTip`;
   const errorTip = document.getElementById(errorTipId); if (!el || !errorTip) return;
-  const value = el.value.trim(); errorTip.classList.toggle('show', value && !versionThreePartRegex.test(value));
+  const value = el.value.trim();
+  const regex = versionThreePartRegex;
+  errorTip.classList.toggle('show', value && !regex.test(value));
 }
 
 // 检测 Release/Debug 版本号是否一致，更新提示
@@ -1181,13 +1229,20 @@ function updateVersionModeHint() {
   const hintWrap = document.getElementById('versionModeHint');
   if (!hintEl || !hintWrap) return;
 
+  // debug&release 单任务模式：release/debug 前三段相同，第四位由 Jenkins 后台按 pairRule 成双成对分配
+  if (isBuildReleaseSingle()) {
+    hintEl.textContent = 'debug&release 单任务：输入 release 版本号前三段（如 1.2.1），release/debug 的第四位由 Jenkins 后台按 pairRule 成双成对自动分配。';
+    hintWrap.style.color = '#e67e22';
+    return;
+  }
+
   if (verRelease && verDebug && verRelease === verDebug) {
     // 版本号一样 → 新版本号规则 pairRule
-    hintEl.innerHTML = '<span style="color:#e67e22;">新版本号规则 pairRule=true</span>：release、debug 版本号的第四位成双成对（偶数 = debug，奇数 = release）。构建为异步并行。';
+    hintEl.innerHTML = '<span style="color:#e67e22;">新版本号规则 pairRule=true</span>：分别输入 release、debug 版本号前三段（如 1.2.1），第四位成双成对（偶数 = debug，奇数 = release）。构建为异步并行。';
     hintWrap.style.color = '#e67e22';
   } else if (verRelease && verDebug) {
     // 版本号不一样 → 老项目规则
-    hintEl.innerHTML = '<span style="color:#e67e22;">老项目规则</span>：debug 版本号第三位比 release 版本号高一位（第四位相同）。构建为异步并行。';
+    hintEl.innerHTML = '<span style="color:#e67e22;">老项目规则 pairRule=false</span>：分别输入 release 版本号前三段（如 1.2.0）、debug 前三段（如 1.2.1），debug 版本号第三位比 release 版本号高一位（第四位相同）。构建为异步并行。';
     hintWrap.style.color = '#e67e22';
   } else {
     hintEl.textContent = 'Release 与 Debug 将同时触发构建（异步并行）。';
@@ -1260,9 +1315,10 @@ function nextStep6() {
   let hasError = false;
   const verReleaseErrorTip = document.getElementById('ver_releaseErrorTip');
   const verDebugErrorTip = document.getElementById('ver_debugErrorTip');
-  if (verRelease && !versionThreePartRegex.test(verRelease) && verReleaseErrorTip) { verReleaseErrorTip.classList.add('show'); hasError = true; }
+  const verReleaseRegex = versionThreePartRegex;
+  if (verRelease && !verReleaseRegex.test(verRelease) && verReleaseErrorTip) { verReleaseErrorTip.classList.add('show'); hasError = true; }
   else if (verReleaseErrorTip) verReleaseErrorTip.classList.remove('show');
-  if (verDebug && !versionThreePartRegex.test(verDebug) && verDebugErrorTip) { verDebugErrorTip.classList.add('show'); hasError = true; }
+  if (!isBuildReleaseSingle() && verDebug && !versionThreePartRegex.test(verDebug) && verDebugErrorTip) { verDebugErrorTip.classList.add('show'); hasError = true; }
   else if (verDebugErrorTip) verDebugErrorTip.classList.remove('show');
   // FCT 自定义版本号格式校验（仅在勾选「fct 版本号自定义」时生效）
   const fctCustomEl = document.getElementById('fct_version_custom');
@@ -1287,7 +1343,7 @@ function nextStep6() {
   if (!tagRecovery) missing.push('recovery_tag');
   if (!tagFct) missing.push('fct_tag');
   if (!verRelease) missing.push('release 版本号');
-  if (!verDebug) missing.push('debug 版本号');
+  if (!isBuildReleaseSingle() && !verDebug) missing.push('debug 版本号');
   if (!buildContent) missing.push('构建内容（请至少勾选一项）');
 
   if (missing.length > 0) {
@@ -1317,11 +1373,10 @@ function nextStep6() {
   const curr = {
     tag_algo: document.getElementById('tag_algo')?.value || '', tag_boot: document.getElementById('tag_boot')?.value || '',
     tag_recovery: document.getElementById('tag_recovery')?.value || '', tag_fct: document.getElementById('tag_fct')?.value || '',
-    ver_release: verReleaseEl?.value || '', ver_debug: verDebugEl?.value || '',
+    ver_release: verReleaseEl?.value || '', ver_debug: isBuildReleaseSingle() ? (verReleaseEl?.value || '') : (verDebugEl?.value || ''),
     ver_fct: getFctVersionName(),  // 勾选自定义则取输入框值，否则跟随 release 版本号
     diff_name: document.getElementById('diff_name')?.value || '', diff_code: document.getElementById('diff_code')?.value || '',
     build_content: document.getElementById('build_content')?.value || '',
-    fw_ver_strategy_env: document.getElementById('fw_ver_strategy_env')?.value || 'none',
     build_tscan: document.getElementById('build_tscan')?.checked ? 'yes' : 'no',
     auto_bind_after_upgrade: document.getElementById('auto_bind_after_upgrade')?.checked ? 'yes' : 'no',
     hmi_core_mm_owner_dep: document.getElementById('hmi_core_mm_owner_dep')?.value || ''
@@ -1336,7 +1391,6 @@ function nextStep6() {
   setValueWithDiff('final7DiffName', curr.diff_name, origin.diff_name);
   setValueWithDiff('final7DiffCode', curr.diff_code, origin.diff_code);
   setValueWithDiff('final7BuildContent', curr.build_content, origin.build_content);
-  setValueWithDiff('final7FwVerStrategyEnv', curr.fw_ver_strategy_env, origin.fw_ver_strategy_env);
   setValueWithDiff('final7BuildTscan', curr.build_tscan === 'yes' ? '是' : '否', (origin.build_tscan === 'yes' ? '是' : '否'));
   setValueWithDiff('final7AutoBind', curr.auto_bind_after_upgrade === 'yes' ? '是' : '否', (origin.auto_bind_after_upgrade === 'yes' ? '是' : '否'));
   // HMI_CORE_MM_OWNER_DEP：默认 2（release=2、debug=2）；用户输入 N（>0）则 release=N、debug=N×2
@@ -1456,7 +1510,7 @@ function fillDeviceList(p) {
   s.innerHTML = '<option value=""></option>';
 
   const options = devices.map(d => ({ value: d, text: d }));
-  deviceTomSelect = new TomSelect('#deviceSelect', {
+  deviceTomSelect = makeTomSelect('#deviceSelect', {
     options: options,
     placeholder: '选择或输入目标项目...',
     maxOptions: null,
@@ -1504,7 +1558,7 @@ function initWikiTokenSelect() {
     wikiTokenTomSelect = null;
   }
 
-  wikiTokenTomSelect = new TomSelect('#wiki_token', {
+  wikiTokenTomSelect = makeTomSelect('#wiki_token', {
     options: options,
     placeholder: '输入或选择 Wiki Token...',
     maxOptions: null,
@@ -1729,7 +1783,7 @@ async function _initChangelogVersionSelects() {
   };
 
   // 重建 old 下拉（默认加载列表，输入触发搜索）
-  clPrevTomSelect = new TomSelect('#clPrevVersion', {
+  clPrevTomSelect = makeTomSelect('#clPrevVersion', {
     valueField: 'value', labelField: 'text', searchField: ['versionName', 'text'],
     placeholder: searchPlaceholder,
     create: false, allowEmptyOption: true, maxOptions: 30,
@@ -1741,7 +1795,7 @@ async function _initChangelogVersionSelects() {
   });
 
   // 重建 new 下拉
-  clCurrTomSelect = new TomSelect('#clCurrVersion', {
+  clCurrTomSelect = makeTomSelect('#clCurrVersion', {
     valueField: 'value', labelField: 'text', searchField: ['versionName', 'text'],
     placeholder: searchPlaceholder,
     create: false, allowEmptyOption: true, maxOptions: 30,
@@ -1810,7 +1864,7 @@ function _onClVersionChange(which, val) {
 function _rebuildNewVersionSelect(options) {
   if (!clCurrTomSelect) return;
   clCurrTomSelect.destroy();
-  clCurrTomSelect = new TomSelect('#clCurrVersion', {
+  clCurrTomSelect = makeTomSelect('#clCurrVersion', {
     valueField: 'value', labelField: 'text', searchField: ['versionName', 'text'],
     placeholder: '选择版本，或输入前几位搜索',
     create: false, allowEmptyOption: true, maxOptions: 30,
@@ -2141,7 +2195,7 @@ async function fetchDiffVersions(device) {
   }
 
   // 先显示加载中
-  diffTomSelect = new TomSelect('#diffVersionSelect', {
+  diffTomSelect = makeTomSelect('#diffVersionSelect', {
     options: [{ value: '', text: '加载中...' }],
     placeholder: '正在加载差分版本列表...',
     create: false,
@@ -2170,7 +2224,7 @@ async function fetchDiffVersions(device) {
 
     if (!detail.length) {
       diffTomSelect.destroy();
-      diffTomSelect = new TomSelect('#diffVersionSelect', {
+      diffTomSelect = makeTomSelect('#diffVersionSelect', {
         options: [],
         placeholder: '暂无差分版本数据',
         create: false,
@@ -2194,7 +2248,7 @@ async function fetchDiffVersions(device) {
 
     // 不去重：列出全部版本（同一 versionCode 的不同 versionName 也全部展示）
     diffTomSelect.destroy();
-    diffTomSelect = new TomSelect('#diffVersionSelect', {
+    diffTomSelect = makeTomSelect('#diffVersionSelect', {
       options: options,
       placeholder: '请选择差分目标版本...',
       maxOptions: null,
@@ -2246,7 +2300,7 @@ async function fetchDiffVersions(device) {
   } catch (err) {
     console.error('获取差分版本列表失败:', err);
     if (diffTomSelect) { diffTomSelect.destroy(); diffTomSelect = null; }
-    diffTomSelect = new TomSelect('#diffVersionSelect', {
+    diffTomSelect = makeTomSelect('#diffVersionSelect', {
       options: [],
       placeholder: '差分版本加载失败，请手动输入',
       create: true,
@@ -2300,9 +2354,9 @@ async function fetchHistoryVersions(device) {
           diff_name: '',
           diff_code: '',
           build_content: '',
-          fw_ver_strategy_env: 'none',
           build_tscan: 'no',
-          auto_bind_after_upgrade: 'no'
+          auto_bind_after_upgrade: 'no',
+          build_release_mode: 'split'
         }
       };
       const div = document.createElement('div');
@@ -2326,11 +2380,13 @@ async function fetchHistoryVersions(device) {
 function clearAllInput(){
   const inputIds = ['projectId','projectStage','versionNumber','publishBranch','docName','wiki_token','tag_algo','tag_boot','tag_recovery','tag_fct','ver_release','ver_debug','diff_name','diff_code','build_content'];
   inputIds.forEach(id=>{ const el = document.getElementById(id); if (el) el.value = ''; });
-  const fwVerEnvEl = document.getElementById('fw_ver_strategy_env'); if (fwVerEnvEl) fwVerEnvEl.value = 'none';
   const tscanEl = document.getElementById('build_tscan'); if (tscanEl) tscanEl.checked = false;
   const autoBindEl = document.getElementById('auto_bind_after_upgrade'); if (autoBindEl) autoBindEl.checked = false;
   const fctCustomEl = document.getElementById('fct_version_custom'); if (fctCustomEl) fctCustomEl.checked = false;
   const verFctEl = document.getElementById('ver_fct'); if (verFctEl) verFctEl.value = '';
+  const splitModeRadio = document.querySelector('input[name="build_release_mode"][value="split"]');
+  if (splitModeRadio) splitModeRadio.checked = true;
+  handleBuildReleaseModeChange();
   updateFctVersionCustomUI();
   initBuildContentCheckboxes(''); resetEditState(); selectedVersionData = null; canGoNextStep4 = false;
   if (diffTomSelect) { diffTomSelect.clear(); }
@@ -2416,12 +2472,13 @@ async function runDirectPipeline() {
   const tag_recovery = document.getElementById('tag_recovery')?.value.trim() || '';
   const tag_fct = document.getElementById('tag_fct')?.value.trim() || '';
   const ver_release = document.getElementById('ver_release')?.value.trim() || '';
-  const ver_debug = document.getElementById('ver_debug')?.value.trim() || '';
+  // debug&release 单任务模式：debug 版本号前三段与 release 相同，第四位由 Jenkins 后台按 pairRule 分配
+  const ver_debug = isBuildReleaseSingle() ? ver_release : (document.getElementById('ver_debug')?.value.trim() || '');
+  const build_release_mode = isMhsPlatform() ? getBuildReleaseMode() : '';
   const ver_fct = getFctVersionName();  // 勾选自定义则取输入框值，否则跟随 release 版本号
   const diff_name = document.getElementById('diff_name')?.value.trim() || '';
   const diff_code = document.getElementById('diff_code')?.value.trim() || '';
   const build_content = document.getElementById('build_content')?.value.trim() || '';
-  const fw_ver_strategy_env = document.getElementById('fw_ver_strategy_env')?.value || 'none';
   const build_tscan = document.getElementById('build_tscan')?.checked ? 'yes' : 'no';
   const auto_bind_after_upgrade = document.getElementById('auto_bind_after_upgrade')?.checked ? 'yes' : 'no';
   const wiki_token = document.getElementById('wiki_token')?.value.trim() || '';
@@ -2434,7 +2491,8 @@ async function runDirectPipeline() {
       tag: tag_algo, boot_tag: tag_boot, recovery_tag: tag_recovery, fct_tag: tag_fct,
       release_version_name: ver_release, debug_version_name: ver_debug, fct_version_name: ver_fct,
       prev_version_name: diff_name, prev_version_code: diff_code,
-      build_mode: build_content, fw_ver_strategy_env, build_tscan, auto_bind_after_upgrade,
+      build_mode: build_content, build_tscan, auto_bind_after_upgrade,
+      build_release_mode: build_release_mode,
     },
     feishu: { template_node_token: wiki_token },
     release_jenkins_url: releaseUrl,
@@ -2498,12 +2556,13 @@ async function nextStep7() {
   const tag_recovery = document.getElementById('tag_recovery')?.value.trim() || '';
   const tag_fct = document.getElementById('tag_fct')?.value.trim() || '';
   const ver_release = document.getElementById('ver_release')?.value.trim() || '';
-  const ver_debug = document.getElementById('ver_debug')?.value.trim() || '';
+  // debug&release 单任务模式：debug 版本号前三段与 release 相同，第四位由 Jenkins 后台按 pairRule 分配
+  const ver_debug = isBuildReleaseSingle() ? ver_release : (document.getElementById('ver_debug')?.value.trim() || '');
+  const build_release_mode = isMhsPlatform() ? getBuildReleaseMode() : '';
   const ver_fct = getFctVersionName();  // 勾选自定义则取输入框值，否则跟随 release 版本号
   const diff_name = document.getElementById('diff_name')?.value.trim() || '';
   const diff_code = document.getElementById('diff_code')?.value.trim() || '';
   const build_content = document.getElementById('build_content')?.value.trim() || '';
-  const fw_ver_strategy_env = document.getElementById('fw_ver_strategy_env')?.value || 'none';
   const build_tscan = document.getElementById('build_tscan')?.checked ? 'yes' : 'no';
   const auto_bind_after_upgrade = document.getElementById('auto_bind_after_upgrade')?.checked ? 'yes' : 'no';
   const hmi_core_mm_owner_dep = document.getElementById('hmi_core_mm_owner_dep')?.value.trim() || '';
@@ -2530,16 +2589,16 @@ async function nextStep7() {
       prev_version_name: diff_name,
       prev_version_code: diff_code,
       build_mode: build_content,
-      fw_ver_strategy_env: fw_ver_strategy_env,
       build_tscan: build_tscan,
       auto_bind_after_upgrade: auto_bind_after_upgrade,
       hmi_core_mm_owner_dep: hmi_core_mm_owner_dep,
+      build_release_mode: build_release_mode,
     },
     feishu: {
       template_node_token: wiki_token,
     },
     jenkins_job_url: (platformJenkinsJobUrl && platformJenkinsJobUrl[selectedPlatform]) || '',
-    platform_select: (platformSelectValue && platformSelectValue[selectedPlatform]) || '',
+    platform_select: (platformSelectByPlatform && platformSelectByPlatform[selectedPlatform]) || '',
     jenkins_auth: getJenkinsAuth(),
     user_id: currentUserId,
     notification_open_id: getNotifyOpenId(),
@@ -3000,7 +3059,7 @@ function startCompileTask(taskId, taskType) {
   localStorage.setItem('activeTaskId', taskId);
   // 立即设置平台和任务类型（从表单已选），Jenkins 按钮不用等任务列表刷新
   window._taskType = taskType || 'build';
-  window._taskPlatform = selectedPlatform || '';
+  window._taskPlatform = (platformSelectByPlatform && platformSelectByPlatform[selectedPlatform]) || '';
   updateJenkinsBtn();
   document.getElementById('currentTaskTitle').textContent = '任务: ' + taskId;
   // 重置
@@ -3405,7 +3464,7 @@ function hideAllStopButtons() {
 
 // Jenkins 跳转按钮（静态 URL，基于平台选择）
 const JENKINS_PLATFORM_URLS = {
-  mhs003:  'https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/',
+  mhs003:  'https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/',
   mhs003s: 'https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/',
 };
 

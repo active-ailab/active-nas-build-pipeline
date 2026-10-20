@@ -3,6 +3,7 @@
     "enabled": true,
     "jenkins_job_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT",
     "block_until_ready": true,
+    "timeout_sec": 300,
     "params": {
       "PRODUCTION": "${release.project}",
       "BEFORE_VERSION_NAME": "${vars.prev_version_name}",
@@ -13,12 +14,12 @@
       "AFTER_MANIFEST_TAG": "${vars.tag}",
       "DIFF_COMPARE_SKIP_JIRA": "YES"
     },
-    "build_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT/4522/",
-    "build_number": 4522,
+    "build_url": "https://jenkins.huami.com/job/DownStream/job/CMP-JIRA-GIT/4735/",
+    "build_number": 4735,
     "status": "queued",
     "result": "",
-    "triggered_at": "20260917_180531",
-    "updated_at": "20260917_180531"
+    "triggered_at": "20261016_153744",
+    "updated_at": "20261016_153744"
   },
   "jenkins": {
     "base_url": "https://jenkins.huami.com",
@@ -26,7 +27,7 @@
     "auth": {
       "type": "basic",
       "username": "cs-guoqifa",
-      "password": ""
+      "password": "${ENV:JENKINS_PASSWORD}"
     },
     "triggers": {
       "auto_run_pipeline": true,
@@ -77,7 +78,7 @@
           "HMI_CORE_MM_OWNER_DEP": "2"
         }
       },
-      "job_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/",
+      "job_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/",
       "modes": "async"
     },
     "builds": {
@@ -93,7 +94,7 @@
           "output_dir": "work/download/${release.project}_debug",
           "overwrite": true
         },
-        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/7053/"
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/1634/"
       },
       "release": {
         "download": {
@@ -107,7 +108,7 @@
           "output_dir": "work/download/${release.project}_release",
           "overwrite": true
         },
-        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_HS3/7052/"
+        "build_url": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/1633/"
       },
       "tscan": {
         "download": {
@@ -236,10 +237,9 @@
   "feishu": {
     "enabled": true,
     "use_wiki": true,
-    "notification_chat_id": "ou_c474b58039a2f78230e8f73a594b6171",
-    "notification_cc_open_ids": [
-      "ou_c474b58039a2f78230e8f73a594b6171"
-    ],
+    "notification_chat_id": "oc_242ad25668ef6b86b6b06d7b6f13bcfd",
+    "notification_open_id": "ou_784eb1795cc4a1016603b6f3cc66ada1",
+    "notification_cc_open_ids": [],
     "wiki_copy_only": true,
     "docx_replace_placeholders": true,
     "docx_replace_only": true,
@@ -308,34 +308,34 @@
       },
       "_field_note": "左=本系统内字段名, 右=多维表格里的列名 (需在飞书侧先建好同名/同语义的列)。环节流水由 feishu_base_notifier.notify_stage() 逐环节追加一行"
     },
-    "template_node_token": "RzHFw5ipYiU5ibkMxSfcgUfDnve",
-    "notification_open_id": "ou_784eb1795cc4a1016603b6f3cc66ada1"
+    "template_node_token": "RzHFw5ipYiU5ibkMxSfcgUfDnve"
   },
   "release": {
     "project": "geneva",
     "device_name": "geneva",
-    "stage": "ota5 第三轮",
-    "version": "3.24.0.1",
-    "variant": "geneva ota5 第三轮 v3.24.0.1",
-    "notes": "releases/geneva/ota5",
+    "stage": "ota4 test",
+    "version": "3.2.0.1",
+    "variant": "geneva ota4 test v3.2.0.1",
+    "notes": "releases/geneva/ota",
     "xml_name": "geneva",
-    "operator": "u_mr49a060_s93dtw"
+    "operator": "u_mv978qgo_glpcn8"
   },
   "vars": {
-    "tag": "geneva_26/9/3",
+    "tag": "geneva_26/7/30",
     "boot_tag": "geneva-bootloader-1.1.2",
     "recovery_tag": "geneva-recovery-1.1.2",
     "fct_tag": "geneva-dvt_fct",
-    "release_version_name": "3.24.0",
-    "debug_version_name": "3.24.1",
-    "fct_version_name": "3.24.0",
-    "prev_version_name": "3.23.0.2",
-    "prev_version_code": "202609111506",
+    "release_version_name": "3.20.0",
+    "debug_version_name": "3.20.1",
+    "fct_version_name": "3.20.0",
+    "prev_version_name": "3.19.0.2",
+    "prev_version_code": "202608070932",
     "build_mode": "OTA,OTA_SLEEP,FCT,BOOT,RECOVERY",
     "fw_ver_strategy_env": "none",
     "build_tscan": "no",
     "auto_bind_after_upgrade": "no",
-    "hmi_core_mm_owner_dep": ""
+    "hmi_core_mm_owner_dep": "",
+    "build_release_mode": "split"
   },
   "platform_select": "mhs003"
 }
