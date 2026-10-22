@@ -3247,6 +3247,7 @@ def _build_placeholder_replacements_from_dsl(
             val = "" if rule.get("value") is None else str(rule.get("value"))
 
         elif mode == "nas_share":
+            nas_only = run_sum.get("share_links_source") == "nas"
             local_path: Optional[Path] = None
             if rule.get("from"):
                 ref = str(rule.get("from") or "").strip()
@@ -3256,7 +3257,14 @@ def _build_placeholder_replacements_from_dsl(
                 elif isinstance(v, str) and v.strip():
                     local_path = Path(v).expanduser().resolve()
 
-            if local_path is None and isinstance(rule.get("match"), dict):
+            if nas_only:
+                # 文档续跑只匹配本次 NAS 清单，本地旧文件不能影响选包。
+                if isinstance(rule.get("match"), dict):
+                    filename, val = _dsl_find_share_link_by_match(run_sum=run_sum, match=rule["match"], what=phs)
+                if not val and local_path is not None:
+                    filename, val = _dsl_find_share_link_for_filename(run_sum, filename=local_path.name)
+
+            if not nas_only and local_path is None and isinstance(rule.get("match"), dict):
                 # Resolve local file by match within run roots.
                 m = rule.get("match") or {}
                 mon = str(rule.get("match_on") or "name").strip().lower() or "name"
@@ -3277,7 +3285,7 @@ def _build_placeholder_replacements_from_dsl(
                     local_path = _dsl_pick_one(candidates, expect=str(rule.get("expect") or "one"), select=str(rule.get("select") or "shortest_path"), what=f"{phs} local match")
 
             # Resolve share link by priority.
-            for how in [str(x) for x in nas_share_priority]:
+            for how in ([] if nas_only else [str(x) for x in nas_share_priority]):
                 if how == "run_summary_share_links":
                     if local_path is not None:
                         filename, val = _dsl_find_share_link_for_filename(run_sum, filename=local_path.name)
@@ -5046,13 +5054,13 @@ def _generate_share_links_from_remote(
     remote_dir: str,
     existing_links: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
-    """skip-upload 补齐：列 NAS 顶层文件，为本地清单缺少的产物创建分享链接。
+    """列 NAS 顶层文件，将每个远端文件名与对应的分享链接绑定。
 
-    返回 {文件名: 分享链接}。用于「直接生成文档」补跑且本地产物已被 LRU 清理的场景：
-    NAS 远端文件仍在，但本地已无文件可遍历，此时按远端目录补齐链接，避免占位符全空。
+    返回 {文件名: 分享链接}，不需要本地文件或产物目录。
+    existing_links 可选，仅用于复用已有链接。
     """
     remote_dir = remote_dir.rstrip("/")
-    print(f"Share links (remote completion): logging into DSM API: {dsm_base_url}")
+    print(f"Share links (NAS inventory): logging into DSM API: {dsm_base_url}")
     client = SynologyDsmClient(dsm_base_url, verify_tls=dsm_verify_tls, timeout_sec=timeout_sec)
     client.login(username=username, password=password)
     links: Dict[str, str] = dict(existing_links or {})
@@ -5635,7 +5643,7 @@ def main() -> int:
 
         # 单任务模式：release run 下载完成后，按版本号末位奇偶把 debug/monkey
         # 产物移动到 debug 下载目录（奇数=release 留在原目录）。
-        if single_task_mode and name == "release":
+        if single_task_mode and name == "release" and not args.skip_download:
             dbg_out_dir = _resolve_cfg_path(builds["debug"]["download"]["output_dir"])
             print(f"Single-task mode: split artifacts by version parity -> debug dir: {dbg_out_dir}")
             _split_artifacts_by_parity(
@@ -5693,7 +5701,10 @@ def main() -> int:
             prepared_dir = Path(dsl_runtime["upload_payload_dir"])
             if str(prepared_dir) not in extra_local_dirs:
                 extra_local_dirs.append(str(prepared_dir))
-            print(f"Prepare: {'reuse' if args.skip_prepare else 'staged'} files in: {prepared_dir}")
+            if args.skip_prepare:
+                print(f"Skip prepare: links use NAS; payload path metadata: {prepared_dir}")
+            else:
+                print(f"Prepare: staged files in: {prepared_dir}")
 
         if args.skip_upload:
             print("Skip NAS upload.")
@@ -5712,41 +5723,15 @@ def main() -> int:
                     )
                 else:
                     try:
-                        share_links_main = _generate_and_print_share_links(
-                            dsm_base_url=dsm_base_url,
-                            dsm_verify_tls=dsm_verify_tls,
-                            timeout_sec=nas_timeout_sec,
-                            username=dsm_user,
-                            password=dsm_pass,
-                            remote_dir=remote_dir,
-                            local_dir=Path(local_dir).expanduser().resolve(),
-                        )
-                        for extra in extra_local_dirs:
-                            extra_path = Path(str(extra)).expanduser().resolve()
-                            share_links_extra[str(extra_path)] = _generate_and_print_share_links(
-                                dsm_base_url=dsm_base_url,
-                                dsm_verify_tls=dsm_verify_tls,
-                                timeout_sec=nas_timeout_sec,
-                                username=dsm_user,
-                                password=dsm_pass,
-                                remote_dir=remote_dir,
-                                local_dir=extra_path,
-                            )
-                    except Exception as e:
-                        print(f"WARN: share link generation (skip-upload mode) failed: {e}", file=sys.stderr)
-                    # 本地列表非空也可能不完整（解压产物已被清理），必须从 NAS
-                    # 补齐额外文件，不能只在主目录没有任何文件时才回退。
-                    try:
-                        known_links = dict(share_links_main)
-                        for links in share_links_extra.values():
-                            known_links.update(links)
+                        # 跳过上传时以远端目录为唯一文件来源，直接绑定文件名和
+                        # 分享链接；无需本地下载目录或解压目录存在。
                         share_links_main = _generate_share_links_from_remote(
                             dsm_base_url=dsm_base_url, dsm_verify_tls=dsm_verify_tls,
                             timeout_sec=nas_timeout_sec, username=dsm_user, password=dsm_pass,
-                            remote_dir=remote_dir, existing_links=known_links,
+                            remote_dir=remote_dir,
                         )
                     except Exception as e:
-                        print(f"WARN: NAS remote share-link completion failed: {e}", file=sys.stderr)
+                        print(f"WARN: NAS remote share-link listing failed: {e}", file=sys.stderr)
 
             if name == _last_build:
                 _notify_base_stage(cfg, "上传", "跳过")
@@ -5760,6 +5745,7 @@ def main() -> int:
                     "local_dir": local_dir,
                     "extra_dirs": extra_local_dirs,
                     "remote_dir": remote_dir,
+                    "share_links_source": "nas",
                     "share_links_main": share_links_main,
                     "share_links_extra": share_links_extra,
                 }
@@ -6081,7 +6067,31 @@ def main() -> int:
             print(f"Switching to release variant...")
             run_one("release")
     # ── TSCAN 产物上传和分享链接（独立于 release/debug builds）──
-    if args.only in ("all", "release"):
+    if args.skip_upload and args.only in ("all", "release"):
+        # TSCAN 同样尊重跳过上传：优先复用已列出的 Monkey 清单，完全
+        # 不检查本地 TSCAN 目录，避免有旧文件时意外重新上传。
+        tscan_up = uploads_by_name.get("tscan") or {}
+        tscan_subdir = str(tscan_up.get("remote_subdir") or "Monkey").strip("/")
+        tscan_remote_dir = f"{remote_variant_base.rstrip('/')}/{tscan_subdir}"
+        tscan_links = None
+        for summary in run_summaries:
+            if summary.get("remote_dir") == tscan_remote_dir:
+                tscan_links = dict(summary.get("share_links_main") or {})
+                break
+        if tscan_links is None:
+            tscan_links = {}
+            if not (args.dry_run or args.skip_share) and dsm_base_url and dsm_user and dsm_pass:
+                try:
+                    tscan_links = _generate_share_links_from_remote(
+                        dsm_base_url=dsm_base_url, dsm_verify_tls=dsm_verify_tls,
+                        timeout_sec=nas_timeout_sec, username=dsm_user, password=dsm_pass,
+                        remote_dir=tscan_remote_dir,
+                    )
+                except Exception as e:
+                    print(f"WARN: TSCAN remote share-link listing failed: {e}", file=sys.stderr)
+        run_summaries.append({"name": "tscan", "remote_dir": tscan_remote_dir,
+                              "share_links_source": "nas", "share_links_main": tscan_links})
+    elif args.only in ("all", "release"):
         # 确定 TSCAN 产物目录
         tscan_local_dir_val = _resolve_cfg_path(Path(
             uploads_by_name["tscan"]["local_dir"] if "tscan" in uploads_by_name

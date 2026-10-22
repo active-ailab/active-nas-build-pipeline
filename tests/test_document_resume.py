@@ -54,7 +54,7 @@ class OfflineTest(unittest.TestCase):
 
 
 class DocumentResumeTests(OfflineTest):
-    def run_resume(self, local_main=True, local_payload=False, relative_workspace=False):
+    def run_resume(self, local_main=True, local_payload=False, relative_workspace=False, local_tscan=False):
         cfg = read_json_with_base(ROOT / "gqf_cologne.json")
         cfg["release"].update(project="cologne", device_name="cologne", version="6.5.15.1", stage="offline")
         cfg["vars"]["build_release_mode"] = "single"
@@ -78,6 +78,9 @@ class DocumentResumeTests(OfflineTest):
         tscan_dir = self.temp / "download" / "tscan"
         cfg["jenkins"]["builds"]["tscan"] = {"build_url": "", "download": {"output_dir": str(tscan_dir)}}
         cfg["nas"]["uploads"].append({"name": "tscan", "remote_subdir": "Monkey", "local_dir": str(tscan_dir)})
+        if local_tscan:
+            tscan_dir.mkdir(parents=True)
+            (tscan_dir / "OLD_tscanResult.zip").write_text("old local report")
         payload = self.temp / "prepare" / "cologne" / "upload_payload"
         if local_payload:
             payload.mkdir(parents=True)
@@ -100,11 +103,19 @@ class DocumentResumeTests(OfflineTest):
         download = self.patch(pipeline, "jenkins_download_artifacts")
         prepare = self.patch(pipeline, "_dsl_execute_prepare_flow")
         upload = self.patch(pipeline, "_run_uploader")
+        split = self.patch(pipeline, "_split_artifacts_by_parity")
+        local_links = self.patch(pipeline, "_generate_and_print_share_links",
+                                 side_effect=AssertionError("Resume must use NAS inventory"))
+        local_matches = self.patch(pipeline, "_dsl_match_files",
+                                   side_effect=AssertionError("Resume must not scan local files"))
+        local_share = self.patch(pipeline, "_dsl_try_dsm_share_link_for_local_path",
+                                 side_effect=AssertionError("Resume must not depend on a local path"))
         self.patch(pipeline, "lark_auth_ensure", return_value=True)
         self.patch(pipeline, "_dsm_client_cache", {})
         dsm = mock.Mock()
         dsm.list_files.side_effect = lambda **kw: (MAIN_FILES + list(EXTRA_FILES.values())
-            if kw["folder_path"].endswith("/Release") else ["archive_cologne_6.5.15.0_202610211920.tgz"])
+            if kw["folder_path"].endswith("/Release") else
+            ["archive_cologne_6.5.15.0_202610211920.tgz", "BOOT_tscanResult.zip", "OTA_tscanResult.zip", "RECOVERY_tscanResult.zip"])
         dsm.create_share_link.side_effect = lambda **kw: "https://nas.invalid/sharing/" + kw["path"].rsplit("/", 1)[-1]
         self.patch(pipeline, "SynologyDsmClient", return_value=dsm)
         publish = self.patch(pipeline, "lark_publish_release_document", return_value=lark.ReleaseDocResult(wiki_url="offline"))
@@ -113,10 +124,18 @@ class DocumentResumeTests(OfflineTest):
         download.assert_not_called()
         prepare.assert_not_called()
         upload.assert_not_called()
+        split.assert_not_called()
+        local_links.assert_not_called()
+        local_matches.assert_not_called()
+        local_share.assert_not_called()
         mapping = publish.call_args.kwargs["placeholder_map"]
         for ph, filename in EXTRA_FILES.items():
             self.assertEqual(mapping[ph], filename + "|https://nas.invalid/sharing/" + filename)
         self.assertEqual(mapping["{{REL_CI_BUILD_URL}}"], RELEASE_URL)
+        for ph, filename in (("{{REL_TSCAN_BOOT}}", "BOOT_tscanResult.zip"),
+                             ("{{REL_TSCAN_OTA}}", "OTA_tscanResult.zip"),
+                             ("{{REL_TSCAN_RECOVERY}}", "RECOVERY_tscanResult.zip")):
+            self.assertEqual(mapping[ph], filename + "|https://nas.invalid/sharing/" + filename)
         for filename_ph, share_ph in (
             ("{{REL_RELEASE_OTA_SIGN_ZIP_FILENAME}}", "{{REL_RELEASE_OTA_SIGN_ZIP}}"),
             ("{{REL_RELEASE_OTA_CLOUD_ARCHIVE_FILENAME}}", "{{REL_RELEASE_OTA_CLOUD_ARCHIVE}}"),
@@ -126,6 +145,8 @@ class DocumentResumeTests(OfflineTest):
         ):
             self.assertEqual(mapping[filename_ph], EXTRA_FILES[share_ph])
         dsm.list_files.assert_any_call(folder_path="/offline/cologne/6.5.15.1/Release")
+        self.assertEqual(dsm.list_files.call_count, 2)  # Release + Monkey; TSCAN reuses Monkey.
+        self.assertEqual(dsm.create_share_link.call_count, len(MAIN_FILES) + len(EXTRA_FILES) + 4)
         self.assertIn(str(payload), self.output.getvalue())
         return dsm
 
@@ -140,6 +161,9 @@ class DocumentResumeTests(OfflineTest):
 
     def test_relative_prepare_paths_resolve_next_to_config(self):
         self.run_resume(relative_workspace=True)
+
+    def test_old_local_tscan_files_never_trigger_upload_during_document_resume(self):
+        self.run_resume(local_tscan=True)
 
     def test_missing_dsl_directory_never_resolves_to_repository_root(self):
         with self.assertRaisesRegex(RuntimeError, "upload_payload_dir"):

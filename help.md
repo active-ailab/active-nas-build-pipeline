@@ -111,7 +111,7 @@ python .\release_pipeline_run.py --config .\release_pipeline_config.json --only 
 
 > 提示：即使 `--skip-upload`，只要不加 `--skip-share`，脚本仍会尝试对“远端已存在的同名文件”生成分享链接。
 
-仅续跑文档时，可以同时跳过下载、解压和上传。此时会保留 payload 目录元数据，并检查当前 NAS 版本目录，补齐本地清单缺少的签名包、OTA_CLOUD、BOOT/RECOVERY manifest 和编译日志链接；本地仅剩部分文件也不会漏查远端。对应的文件名占位符从已解析的链接中取值，不依赖本地文件仍然存在。
+仅续跑文档时，可以同时跳过下载、解压和上传。此时直接读取当前 NAS 版本的 Release、Monkey 目录，构建 `{文件名: 分享链接}` 清单；按文件名匹配签名包、OTA_CLOUD、BOOT/RECOVERY manifest 和编译日志，文件名占位符与链接来自同一条记录。不扫描本地产物，本地目录完全不存在也能生成文档。TSCAN 复用 Monkey 的 NAS 清单，不会因本地还留有旧报告而意外上传。
 
 网页直接生成文档时，Jenkins 链接留空会复用该项目已保存的构建 URL；手动填写的链接优先。`{{REL_CI_BUILD_URL}}` 来自这条构建记录，与 NAS 文件链接分别解析。
 
