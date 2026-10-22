@@ -57,6 +57,7 @@ SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 from config_loader import read_json_with_base
+from changelog_state import RUNTIME_KEYS, save_state as save_changelog_state
 
 try:  # 多维表格「环节流水」通知，缺失时不阻断流水线
     from feishu_base_notifier import notify_stage as _base_notify_stage
@@ -969,13 +970,12 @@ def _maybe_trigger_changelog_async(
             opener=opener,
         )
         print(f"Changelog: queued -> build #{num} {build_url}")
-        # Persist a small state for the pipeline to pick up later
-        # 附上归属标识（项目+版本），供 release_pipeline_run 复用前校验，
-        # 避免共用 CMP-JIRA-GIT job 时复用上一个项目残留的构建。
+        # 每个项目/版本单独保存，避免并行发布互相覆盖构建归属。
         state = {
             "job_url": job,
             "build_number": int(num),
             "build_url": build_url,
+            "queue_url": queue_url,
             "triggered_at": _now_tag(),
             "updated_at": _now_tag(),
             "status": "queued",
@@ -984,18 +984,15 @@ def _maybe_trigger_changelog_async(
             "project": str((cfg.get("release") or {}).get("project") or "").strip(),
             "version": str((cfg.get("release") or {}).get("version") or "").strip(),
         }
-        _write_json(_output_dir() / "changelog_job.json", state)
+        save_changelog_state(state)
 
         changelog_cfg = cfg.get("changelog")
         if not isinstance(changelog_cfg, dict):
             changelog_cfg = {}
             cfg["changelog"] = changelog_cfg
-        changelog_cfg["build_url"] = build_url
-        changelog_cfg["build_number"] = int(num)
-        changelog_cfg["status"] = "queued"
-        changelog_cfg["result"] = ""
-        changelog_cfg["triggered_at"] = state["triggered_at"]
-        changelog_cfg["updated_at"] = state["updated_at"]
+        for key in RUNTIME_KEYS:
+            changelog_cfg.pop(key, None)
+        changelog_cfg.update(state)
         _atomic_write_json(cfg_path, cfg, backup=False)
     except Exception as e:
         print(f"WARN: Changelog async trigger failed: {e}", file=sys.stderr)

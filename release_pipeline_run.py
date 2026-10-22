@@ -30,6 +30,11 @@ SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 from config_loader import read_json_with_base
+from changelog_state import (
+    load_state as load_changelog_state,
+    save_state as save_changelog_state,
+    select_state as select_changelog_state,
+)
 
 # ── 飞书 CLI 适配层 ──
 # 替代原有 ~2000 行自建飞书 API 代码
@@ -3364,41 +3369,18 @@ def _build_placeholder_replacements_from_dsl(
     return {k: ("" if v is None else str(v)) for k, v in out.items() if str(k).strip()}
 
 
-def _changelog_state_path() -> Path:
-    return Path(__file__).with_name("output") / "changelog_job.json"
-
-
-def _load_changelog_state() -> Dict[str, Any]:
-    path = _changelog_state_path()
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return raw if isinstance(raw, dict) else {}
-
-
-def _save_changelog_state(state: Dict[str, Any]) -> None:
-    path = _changelog_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def _update_changelog_state(**updates: Any) -> Dict[str, Any]:
-    state = _load_changelog_state()
+def _update_changelog_state(*, project: str, version: str, **updates: Any) -> Dict[str, Any]:
+    state = load_changelog_state(project, version)
+    if updates.get("build_number") and updates["build_number"] != state.get("build_number"):
+        state = {}  # 新构建不能继承旧构建的 link/result。
+    state.update(project=project, version=version)
     for key, value in updates.items():
         if value is None:
             continue
         state[str(key)] = value
     state["updated_at"] = time.strftime("%Y%m%d_%H%M%S")
-    _save_changelog_state(state)
+    save_changelog_state(state)
     return state
-
-
-def _changelog_state_finished_without_diff() -> bool:
-    state = _load_changelog_state()
-    return str(state.get("status") or "").strip().lower() == "finished_no_diff"
 
 
 def _resolve_jenkins_auth(cfg: Dict[str, Any]) -> Dict[str, str]:
@@ -3445,8 +3427,7 @@ def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str
     import re
     
     try:
-        from urllib.request import Request, urlopen, HTTPError, build_opener, HTTPCookieProcessor
-        from urllib.parse import urlencode
+        from urllib.request import Request, build_opener, HTTPCookieProcessor
         from base64 import b64encode
         from http.cookiejar import CookieJar
         
@@ -3460,135 +3441,35 @@ def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str
         
         base_url = job_url.rstrip("/")
         
-        # Step 1: Get Jenkins-Crumb (CSRF token)
-        print(f"Changelog: getting Jenkins CSRF token...")
-        crumb_paths = [
-            f"{job_url.split('/job/')[0]}/crumbIssuer/api/json",
-            f"{base_url.rsplit('/job/', 1)[0]}/crumbIssuer/api/json"
-        ]
-        crumb = ""
-        crumb_field = "Jenkins-Crumb"
-        
-        for cp in list(dict.fromkeys(crumb_paths)): # Unique paths
-            try:
-                print(f"DEBUG: trying crumb URL: {cp}")
-                req_crumb = Request(cp, headers={"Authorization": f"Basic {auth_str}"})
-                with opener.open(req_crumb, timeout=10) as resp_crumb:
-                    crumb_data = json.loads(resp_crumb.read().decode())
-                    crumb = str(crumb_data.get("crumb", ""))
-                    crumb_field = str(crumb_data.get("crumbRequestField", "Jenkins-Crumb"))
-                    if crumb:
-                        print(f"Changelog: got crumb from {cp}: {crumb[:4]}***")
-                        break
-            except Exception as e:
-                print(f"DEBUG: crumb fetch failed for {cp}: {e}")
-        
-        # Step 2: Get latest build number
-        print(f"Changelog: querying latest build number...")
-        api_url = f"{base_url}/api/json"
-        req_api = Request(api_url, headers={"Authorization": f"Basic {auth_str}"})
-        last_build_num = 0
-        try:
-            with opener.open(req_api, timeout=10) as resp_api:
-                job_data = json.loads(resp_api.read().decode())
-                last_build_num = job_data.get("lastBuild", {}).get("number", 0)
-            print(f"Changelog: current last build number: {last_build_num}")
-        except Exception as e:
-            print(f"WARN: Could not get last build number: {e}")
-        
-        # Step 3: Trigger build
-        print(f"Changelog: triggering Jenkins job with params...")
-        trigger_url = f"{base_url}/buildWithParameters"
-        
+        # Resolve this POST's own queue item. lastBuild belongs to the shared
+        # Jenkins job and may already point at a different project's build.
+        from jenkins_trigger_build import (
+            JenkinsAuth, _try_get_crumb, _trigger_build, _poll_queue_for_build,
+        )
+        auth = JenkinsAuth(j_user, j_pass)
+        jenkins_base = job_url.split("/job/")[0].rstrip("/")
+        crumb = _try_get_crumb(base_url=jenkins_base, auth=auth, timeout_sec=10, opener=opener)
         filtered_params = {str(k): str(v) for k, v in params.items() if k and v is not None}
-        print(f"Changelog: parameters: {json.dumps(filtered_params, ensure_ascii=False, indent=2)}")
-        
-        query_data = urlencode(filtered_params).encode('utf-8')
-        
-        headers = {
-            "Authorization": f"Basic {auth_str}",
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
-        if crumb:
-            headers[crumb_field] = crumb
-        
-        req_trigger = Request(trigger_url, data=query_data, headers=headers, method="POST")
-        
-        try:
-            with opener.open(req_trigger, timeout=30) as resp_trigger:
-                status = resp_trigger.getcode()
-                print(f"Changelog: trigger response code: {status}")
-        except HTTPError as e:
-            if e.code in (200, 201, 302): # Success or redirect
-                print(f"Changelog: trigger success (code {e.code})")
-            elif e.code == 403:
-                print(f"ERROR: Jenkins trigger failed with 403 Forbidden. "
-                      "This usually means the user lacks 'Build' permissions or an API Token is required.")
-                # Try one more fallback without crumb (sometimes API Token doesn't need crumb)
-                print("Changelog: trying trigger without crumb as fallback...")
-                req_no_crumb = Request(trigger_url, data=query_data, headers={"Authorization": f"Basic {auth_str}", "Content-Type": "application/x-www-form-urlencoded"}, method="POST")
-                try:
-                    with opener.open(req_no_crumb, timeout=30) as resp_nc:
-                        print(f"Changelog: no-crumb trigger response: {resp_nc.getcode()}")
-                except Exception as e_nc:
-                    print(f"DEBUG: no-crumb fallback also failed: {e_nc}")
-                    raise e
-            else:
-                raise
-        
-        # Step 4: Wait for new build to be created
-        print(f"Changelog: waiting for build to be queued...")
-        time.sleep(3)
-        
-        build_number = 0
-        for attempt in range(15):
-            try:
-                req_api_poll = Request(api_url, headers={"Authorization": f"Basic {auth_str}"})
-                with opener.open(req_api_poll, timeout=10) as resp_api:
-                    job_data = json.loads(resp_api.read().decode())
-                    current_build_num = job_data.get("lastBuild", {}).get("number", 0)
-                    if current_build_num > last_build_num:
-                        build_number = current_build_num
-                        print(f"Changelog: build #{build_number} created and running")
-                        _update_changelog_state(
-                            job_url=job_url,
-                            build_number=int(build_number),
-                            build_url=f"{base_url}/{build_number}/",
-                            status="running",
-                            result="",
-                            triggered_at=time.strftime("%Y%m%d_%H%M%S"),
-                            project=project,
-                            version=version,
-                        )
-                        break
-            except Exception:
-                pass
-            time.sleep(3)
-        else:
-            # Fallback
-            print(f"WARN: Build not started yet; checking again in 10s...")
-            time.sleep(10)
-            try:
-                with opener.open(req_api, timeout=10) as resp_api:
-                    job_data = json.loads(resp_api.read().decode())
-                    build_number = job_data.get("lastBuild", {}).get("number", 0)
-                    if build_number > last_build_num:
-                        print(f"Changelog: build #{build_number} detected")
-                        _update_changelog_state(
-                            job_url=job_url,
-                            build_number=int(build_number),
-                            build_url=f"{base_url}/{build_number}/",
-                            status="running",
-                            result="",
-                            triggered_at=time.strftime("%Y%m%d_%H%M%S"),
-                            project=project,
-                            version=version,
-                        )
-                    else:
-                        return ""
-            except Exception:
-                return ""
-        
+        print(f"Changelog: triggering Jenkins job with params: {json.dumps(filtered_params, ensure_ascii=False)}")
+        queue_url = _trigger_build(
+            job_url=job_url, base_url=jenkins_base, auth=auth,
+            parameters=filtered_params, crumb=crumb, timeout_sec=30,
+            dry_run=False, opener=opener,
+        )
+        build_number, build_url = _poll_queue_for_build(
+            queue_url=queue_url, auth=auth, poll_interval_sec=2,
+            queue_timeout_sec=max(1, int(timeout_sec)), request_timeout_sec=10,
+            opener=opener,
+        )
+        build_url = build_url or f"{base_url}/{build_number}/"
+        print(f"Changelog: queue resolved -> build #{build_number} {build_url}")
+        _update_changelog_state(
+            project=project, version=version, job_url=job_url,
+            build_number=int(build_number), build_url=build_url,
+            queue_url=queue_url, status="running", result="",
+            parameters=filtered_params, triggered_at=time.strftime("%Y%m%d_%H%M%S"),
+        )
+
         # Step 5: Poll status
         print(f"Changelog: monitoring build #{build_number}...")
         build_api_url = f"{base_url}/{build_number}/api/json"
@@ -3700,36 +3581,11 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
     # 复用/触发时的 Basic Auth 401。这里统一解析成明文。
     j_auth = _resolve_jenkins_auth(cfg)
 
-    state = _load_changelog_state()
-    if isinstance(changelog_cfg, dict):
-        for key in ("job_url", "build_number", "build_url", "status", "result", "triggered_at", "updated_at", "finished_at", "link"):
-            value = changelog_cfg.get(key)
-            if value is None:
-                continue
-            if isinstance(value, str) and not value.strip():
-                continue
-            state[str(key)] = value
-    
-    # ── 归属校验：changelog 状态跨项目共享（CMP-JIRA-GIT 是共用 job）──
-    # 全局 state 文件与项目配置文件 changelog 段都可能残留上一个项目/上一次运行的
-    # build 信息。必须确认残留构建属于「本次项目 + 本次版本」，否则丢弃并走正常触发，
-    # 避免把上一个项目的差分链接误当成本次发版文档。
     cur_project = str((cfg.get("release") or {}).get("project") or "").strip()
     cur_version = str((cfg.get("release") or {}).get("version") or "").strip()
-    _state_project = str(state.get("project") or "").strip()
-    _state_version = str(state.get("version") or "").strip()
-    _belongs = (
-        bool(_state_project)
-        and _state_project == cur_project
-        and (not _state_version or not cur_version or _state_version == cur_version)
-    )
-    if not _belongs:
-        if _state_project or state.get("build_number"):
-            print(f"Changelog: 残留 changelog 状态（{_state_project or '?'}/{_state_version or '?'} build#{state.get('build_number')}）与本次 {cur_project}/{cur_version} 不一致，丢弃并重新触发")
-        state = {}
-        # 清除项目配置文件 changelog 段的运行时残留，避免上面的覆盖逻辑又把旧 build 带回来
-        for _k in ("build_number", "build_url", "status", "result", "triggered_at", "updated_at", "finished_at", "link"):
-            changelog_cfg.pop(_k, None)
+    # 先验证完整归属，再选择一整条构建记录，不能把别的项目的标签和
+    # 本项目配置里的 build_number 拼成一条混合记录。
+    state = select_changelog_state(cur_project, cur_version, changelog_cfg)
     
     # Fast path: try reuse an existing async-triggered job if present.
     def _extract_from_existing(job_url_base: str, build_number: int, j_auth: Dict[str, Any], timeout_sec: int) -> Tuple[str, bool]:
@@ -3795,6 +3651,8 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                 base = str(state.get("job_url") or job_url).rstrip("/")
                 build_url = str(state.get("build_url") or f"{base}/{bn}/").strip()
                 print(f"Changelog: reusing async-triggered build #{bn} -> {build_url}")
+                if state.get("link"):
+                    return str(state["link"])
                 # Guard: skip polling if build already has a terminal result.
                 known_result = str(state.get("result") or "").strip().upper()
                 known_status = str(state.get("status") or "").strip()
@@ -3810,6 +3668,7 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                     )
                     if link:
                         _update_changelog_state(
+                            project=cur_project, version=cur_version,
                             job_url=base,
                             build_number=bn,
                             build_url=build_url,
@@ -3825,6 +3684,7 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                     print(f"Changelog: build #{bn} already {known_status}, skipping")
                     return ""
                 _update_changelog_state(
+                    project=cur_project, version=cur_version,
                     job_url=base,
                     build_number=bn,
                     build_url=build_url,
@@ -3847,6 +3707,7 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                         j_auth=j_auth,
                     )
                     _update_changelog_state(
+                        project=cur_project, version=cur_version,
                         job_url=base,
                         build_number=bn,
                         build_url=build_url,
@@ -3863,6 +3724,7 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                         j_auth=j_auth,
                     )
                     _update_changelog_state(
+                        project=cur_project, version=cur_version,
                         job_url=base,
                         build_number=bn,
                         build_url=build_url,
@@ -3872,9 +3734,23 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                         finished_at=time.strftime("%Y%m%d_%H%M%S") if not building else None,
                     )
                     return link
-        except Exception:
-            # Fall through to normal path
-            pass
+                # 没有链接不代表没有触发过任务。结束/失败/暂未生成链接都不能
+                # 再提交一次构建，否则生成映射或续跑时会不断重复触发。
+                result, building = _get_build_result(
+                    job_url_base=base, build_number=bn, j_auth=j_auth,
+                )
+                _update_changelog_state(
+                    project=cur_project, version=cur_version, job_url=base,
+                    build_number=bn, build_url=build_url, result=result,
+                    status="finished" if result and not building else "running",
+                    link="",
+                )
+                print(f"WARN: Changelog build #{bn}: result={result or 'pending/unknown'}, 未获取到差分链接，不重复触发")
+                return ""
+        except Exception as e:
+            # 读取已有构建失败也不能另起构建，保留原记录供后续续跑。
+            print(f"WARN: Changelog reuse failed: {e}; 保留原构建，不重复触发", file=sys.stderr)
+            return ""
     
     # Expand placeholders in param values
     expanded_params: Dict[str, str] = {}

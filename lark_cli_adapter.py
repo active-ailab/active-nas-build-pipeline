@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,8 +33,6 @@ FEISHU_ADMIN_EMAIL = os.environ.get("FEISHU_ADMIN_EMAIL", "cs-guoqifa@zepp.com")
 _auth_state = {}              # domain_key -> {"ok": bool, "ts": float}，认证结果按 domain 分桶缓存
 _AUTH_CACHE_TTL = 300         # 成功后缓存 5 分钟
 _AUTH_RETRY_INTERVAL = 30     # 失败后 30 秒允许重试（仅作用于同一 domain 桶，避免误伤其他 domain）
-_binary_checked = False
-_binary_ok = False
 
 
 class LarkCliError(RuntimeError):
@@ -47,7 +46,6 @@ class LarkCliError(RuntimeError):
 
 def _find_lark_bin() -> str:
     if os.name == "nt":
-        import shutil
         f = shutil.which(LARK_CLI_BIN + ".cmd") or shutil.which(LARK_CLI_BIN)
         if f:
             print(f"[lark-cli] found via PATH: {f}", file=sys.stderr)
@@ -102,7 +100,7 @@ def _run(args: List[str], timeout_sec: int = LARK_TIMEOUT_SEC,
         out_text = (r.stdout or "").strip()
         if r.returncode != 0:
             msg = err_text or out_text
-            raise LarkCliError(f"lark-cli 失败: {msg[:400]}")
+            raise LarkCliError(f"lark-cli 失败 (exit={r.returncode}): {msg[:400]}")
         # str_replace 可能 ok=true 但 result=failed
         if out_text.startswith("{"):
             try:
@@ -118,19 +116,14 @@ def _run(args: List[str], timeout_sec: int = LARK_TIMEOUT_SEC,
         raise LarkCliError("lark-cli 未安装: npx @larksuite/cli@latest install")
     except subprocess.TimeoutExpired:
         raise LarkCliError(f"lark-cli 超时 ({timeout_sec}s)")
+    except OSError as e:
+        raise LarkCliError(f"lark-cli 启动失败: {e}") from e
 
 
 def _check_bin() -> bool:
-    global _binary_checked, _binary_ok
-    if _binary_checked:
-        return _binary_ok
-    _binary_checked = True
-    try:
-        _run(["--version"], timeout_sec=5)
-        _binary_ok = True
-    except Exception:
-        _binary_ok = False
-    return _binary_ok
+    # 查找文件即可；启动 Node/CLI 超时不代表未安装，更不能缓存成永久失败。
+    # 真正的启动/认证异常由下面的 auth status 重试并保留错误原因。
+    return os.path.isfile(_LARK) or shutil.which(_LARK) is not None
 
 
 # ── 认证 ──
@@ -187,11 +180,13 @@ def _auth_check_impl(*, domain: Optional[str], silent: bool) -> Tuple[bool, str]
     last_err = None
     for attempt in range(3):
         try:
-            _run(["auth", "status"], timeout_sec=10)
+            _run(["auth", "status"], timeout_sec=30)
             return True, ""
         except LarkCliError as e:
             last_err = e
             if attempt < 2:
+                if not silent:
+                    print(f"[lark-cli] auth status 第 {attempt + 1}/3 次失败: {e}，2 秒后重试", file=sys.stderr)
                 _time.sleep(2)
 
     # 三次重试都失败，尝试用 lark-cli auth login 自动恢复（需要已登录过的 profile）
@@ -422,7 +417,10 @@ def lark_wiki_copy_node(
     # 先尝试 lark-cli（带 user 身份）
     # silent=False + force=True：失败时打印真实原因（而非静默降级），并绕过失败缓存强制真试一次，
     # 避免被流程开头某次无参 auth 检查的偶发失败短路，导致误降级到 tenant token 撞 131006。
-    if lark_auth_ensure(domain="wiki", silent=False, force=True):
+    auth_ok = lark_auth_ensure(domain="wiki", silent=False, force=True)
+    # auth status 是预检。即便预检临时失败，也应让真实操作尝试用户身份，
+    # 不要因为预检异常直接切换到没有空间权限的机器人。
+    if auth_ok or _check_bin():
         try:
             params = {"space_id": str(target_space_id), "node_token": str(source_node_token)}
             body = {}
