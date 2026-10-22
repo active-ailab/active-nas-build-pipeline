@@ -352,6 +352,10 @@ Debug 的主目录本身会整目录上传到 NAS 的 `Monkey/` 下；如果上�
 - “必须稳定存在、并且需要稳定链接”的关键文件（例如 `watch@mhs003.elf`、`ota_sign.zip`、console 日志）统一进入 payload，链接生成更可控。
 - “本来就在 Jenkins 下载目录里且无需解压”的文件（例如 top tgz、工厂工具 zip、md5 等）直接靠整目录上传 + 正则匹配，避免 DSL 写得过长。
 
+匹配时同时检查产物类型、项目名和版本：完整包只接受 `archive_<项目>_<版本>…tgz`，不会用 sensorhub 或工厂 zip 替代；OTA_CLOUD、OTA_SLEEP、签名 zip、sensorhub OTA/FCT、APP/BOOT/RECOVERY manifest 分别匹配各自类型。MD5 同时支持 `<项目>_<版本>_md5.txt`、`<项目>_md5.txt` 和通用 MD5 文件，优先当前版本的项目文件。
+
+Release 按本次固件版本筛选；单任务模式下 Monkey 使用相邻的配对偶数版本，分开构建时使用配置中的 Debug 版本。BOOT/RECOVERY 使用各自独立版本，不套用固件版本。筛选后若仍有多个不同产物，会列出候选并停止，不再按文件名最短或字典序猜测。此校验覆盖 Prepare 选包、NAS 文档续跑及旧版占位符映射。
+
 ---
 
 ## 7. 常见问题（Troubleshooting）

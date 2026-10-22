@@ -30,6 +30,7 @@ SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 from config_loader import read_json_with_base
+from artifact_matching import PREPARE_ROLES, ArtifactSelectionError, artifact_pattern, select_artifact
 from changelog_state import (
     load_state as load_changelog_state,
     save_state as save_changelog_state,
@@ -2899,6 +2900,15 @@ def _dsl_execute_prepare_flow(
     vars.setdefault("work_dir", work_dir)
     vars.setdefault("upload_payload_dir", upload_payload_dir)
 
+    def choose_file(paths: List[Path], save_as: str, what: str) -> Path:
+        role = PREPARE_ROLES.get(save_as)
+        if not role:
+            return _dsl_pick_one(paths, expect=expect, select=select, what=what)
+        _, selected = select_artifact([(p.name, p) for p in paths], cfg=cfg, placeholder=role, run=current_run)
+        if not selected:
+            raise RuntimeError(f"Not found for current project/version: {what}")
+        return selected
+
     for idx, step in enumerate(steps, start=1):
         if not isinstance(step, dict):
             raise RuntimeError(f"DSL: step #{idx} must be an object")
@@ -2929,7 +2939,7 @@ def _dsl_execute_prepare_flow(
                     vars[save_as] = (root / dummy_name)
                 else:
                     found = _dsl_match_files(root=root, match=match, match_on=match_on)
-                    chosen = _dsl_pick_one(found, expect=expect, select=select, what=f"{name} (find)")
+                    chosen = choose_file(found, save_as, f"{name} (find)")
                     vars[save_as] = chosen
 
             elif op == "pick":
@@ -2947,7 +2957,7 @@ def _dsl_execute_prepare_flow(
                     vars[save_as] = (root / dummy_name)
                 else:
                     found = _dsl_match_files(root=root, match=match, match_on=match_on)
-                    chosen = _dsl_pick_one(found, expect=expect, select=select, what=f"{name} (pick)")
+                    chosen = choose_file(found, save_as, f"{name} (pick)")
                     vars[save_as] = chosen
 
             elif op == "extract_tgz":
@@ -3039,6 +3049,8 @@ def _dsl_execute_prepare_flow(
             else:
                 raise RuntimeError(f"DSL: unsupported op={op!r} ({name})")
 
+        except ArtifactSelectionError:
+            raise
         except Exception as e:
             if optional:
                 print(f"DSL Prepare: optional step skipped: {name} ({op}): {e}")
@@ -3054,16 +3066,18 @@ def _dsl_execute_prepare_flow(
     return {"vars": vars, "work_dir": work_dir, "upload_payload_dir": upload_payload_dir}
 
 
-def _dsl_find_share_link_for_filename(run_summary: Dict[str, Any], *, filename: str) -> Tuple[str, str]:
+def _dsl_find_share_link_for_filename(run_summary: Dict[str, Any], *, filename: str,
+                                    cfg: Optional[Dict[str, Any]] = None, placeholder: str = "") -> Tuple[str, str]:
     fn = str(filename or "").strip()
     if not fn:
         return "", ""
+    candidates = []
     for k, url in _iter_all_share_links(run_summary):
         key_str = str(k)
         base = key_str.replace("\\", "/").rsplit("/", 1)[-1]
         if base == fn or key_str == fn:
-            return base, str(url)
-    return "", ""
+            candidates.append((key_str, str(url)))
+    return select_artifact(candidates, cfg=cfg or {}, placeholder=placeholder, run=str(run_summary.get("name") or "release"))
 
 # Module-level DSM client cache to avoid repeated login/logout during placeholder resolution.
 # Key = (base_url, username), value = SynologyDsmClient (already logged in).
@@ -3197,21 +3211,25 @@ def _build_placeholder_replacements_from_dsl(
 
         exact = str(match.get("exact") or "").strip()
         if exact:
-            fname, v = _dsl_find_share_link_for_filename(run_sum, filename=exact)
+            fname, v = _dsl_find_share_link_for_filename(run_sum, filename=exact, cfg=cfg, placeholder=what)
             if v:
                 return fname, v
 
         fb = str(match.get("fallback_regex") or "").strip()
         if fb:
             try:
-                return _find_share_link_by_regex(run_sum, filename_regex=re.compile(fb, re.IGNORECASE), what=what)
+                return _find_share_link_by_regex(run_sum, filename_regex=re.compile(fb, re.IGNORECASE), what=what, cfg=cfg, placeholder=what)
+            except ArtifactSelectionError:
+                raise
             except Exception:
                 pass
 
         rx = str(match.get("regex") or "").strip()
         if rx:
             try:
-                return _find_share_link_by_regex(run_sum, filename_regex=re.compile(rx, re.IGNORECASE), what=what)
+                return _find_share_link_by_regex(run_sum, filename_regex=re.compile(rx, re.IGNORECASE), what=what, cfg=cfg, placeholder=what)
+            except ArtifactSelectionError:
+                raise
             except Exception:
                 pass
 
@@ -3256,13 +3274,16 @@ def _build_placeholder_replacements_from_dsl(
                     local_path = v
                 elif isinstance(v, str) and v.strip():
                     local_path = Path(v).expanduser().resolve()
+            if local_path is not None:
+                _, selected = select_artifact([(local_path.name, local_path)], cfg=cfg, placeholder=phs, run=run_name)
+                local_path = selected or None
 
             if nas_only:
                 # 文档续跑只匹配本次 NAS 清单，本地旧文件不能影响选包。
                 if isinstance(rule.get("match"), dict):
                     filename, val = _dsl_find_share_link_by_match(run_sum=run_sum, match=rule["match"], what=phs)
                 if not val and local_path is not None:
-                    filename, val = _dsl_find_share_link_for_filename(run_sum, filename=local_path.name)
+                    filename, val = _dsl_find_share_link_for_filename(run_sum, filename=local_path.name, cfg=cfg, placeholder=phs)
 
             if not nas_only and local_path is None and isinstance(rule.get("match"), dict):
                 # Resolve local file by match within run roots.
@@ -3282,13 +3303,14 @@ def _build_placeholder_replacements_from_dsl(
                 for r in roots:
                     candidates.extend(_dsl_match_files(root=r, match=m, match_on=mon))
                 if candidates:
-                    local_path = _dsl_pick_one(candidates, expect=str(rule.get("expect") or "one"), select=str(rule.get("select") or "shortest_path"), what=f"{phs} local match")
+                    _, selected = select_artifact([(p.name, p) for p in candidates], cfg=cfg, placeholder=phs, run=run_name)
+                    local_path = selected or None
 
             # Resolve share link by priority.
             for how in ([] if nas_only else [str(x) for x in nas_share_priority]):
                 if how == "run_summary_share_links":
                     if local_path is not None:
-                        filename, val = _dsl_find_share_link_for_filename(run_sum, filename=local_path.name)
+                        filename, val = _dsl_find_share_link_for_filename(run_sum, filename=local_path.name, cfg=cfg, placeholder=phs)
                     elif isinstance(rule.get("match"), dict):
                         filename, val = _dsl_find_share_link_by_match(run_sum=run_sum, match=(rule.get("match") or {}), what=phs)
                     if val:
@@ -3916,7 +3938,8 @@ def _iter_all_share_links(run_summary: Dict[str, Any]) -> Iterable[Tuple[str, st
                         yield ks, vs
 
 
-def _find_share_link_by_regex(run_summary: Dict[str, Any], *, filename_regex: Pattern, what: str) -> Tuple[str, str]:
+def _find_share_link_by_regex(run_summary: Dict[str, Any], *, filename_regex: Pattern, what: str,
+                              cfg: Optional[Dict[str, Any]] = None, placeholder: str = "") -> Tuple[str, str]:
     matches: List[Tuple[str, str]] = []
     for k, url in _iter_all_share_links(run_summary):
         # Keys may be relative paths like "binary/foo.zip"; match against both
@@ -3924,12 +3947,11 @@ def _find_share_link_by_regex(run_summary: Dict[str, Any], *, filename_regex: Pa
         key_str = str(k)
         base = key_str.replace("\\", "/").rsplit("/", 1)[-1]
         if filename_regex.search(key_str) or filename_regex.search(base):
-            matches.append((base, url))
-    if not matches:
+            matches.append((key_str, url))
+    selected = select_artifact(matches, cfg=cfg or {}, placeholder=placeholder, run=str(run_summary.get("name") or "release"))
+    if not selected[1]:
         raise RuntimeError(f"Share link not found for {what} (pattern={filename_regex.pattern})")
-    # Sort by key length then key string to pick shortest/best match
-    matches.sort(key=lambda x: (len(x[0]), x[0]))
-    return matches[0]
+    return selected
 
 
 def _write_placeholder_mapping_file(*, mapping: Dict[str, str], doc_name: str) -> Path:
@@ -3975,6 +3997,11 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
         "{{REL_MD5SUM_FILE}}",
         "{{REL_CI_BUILD_URL}}",
         "{{REL_BUILD_LOG_FILE}}",
+        "{{REL_RELEASE_MD5}}",
+        "{{REL_RELEASE_SENSORHUB_OTA_ZIP}}",
+        "{{REL_RELEASE_SENSORHUB_FCT_ZIP}}",
+        "{{REL_MONKEY_SENSORHUB_OTA_ZIP}}",
+        "{{REL_MONKEY_SENSORHUB_FCT_ZIP}}",
         "{{REL_TSCAN_BOOT}}",
         "{{REL_TSCAN_OTA}}",
         "{{REL_TSCAN_RECOVERY}}",
@@ -4046,7 +4073,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
 
     def _roots_from_run_sum(run_sum: Dict[str, Any]) -> List[Path]:
         roots: List[Path] = []
-        if not run_sum:
+        if not run_sum or run_sum.get("share_links_source") == "nas":
             return roots
         for key2 in ("out_dir", "local_dir"):
             v = str(run_sum.get(key2) or "").strip()
@@ -4126,6 +4153,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
         roots: List[Path],
         filename_pat: Pattern,
         what: str,
+        placeholder: str,
     ) -> Tuple[str, str]:
         if not run_sum or not roots:
             return "", ""
@@ -4133,19 +4161,15 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
         if not remote_dir:
             return "", ""
 
-        # Find a local file matching the pattern.
-        found_path: Optional[Path] = None
-        found_root: Optional[Path] = None
+        # Apply the same project/version/category checks as NAS-only matching.
+        paths = []
         for root in roots:
-            try:
-                p = _pick_one(_find_files_by_regex(root, filename_pat), what=f"{what} in {root}")
-                found_path = p
-                found_root = root
-                break
-            except Exception:
-                continue
-        if not found_path or not found_root:
+            paths.extend(_find_files_by_regex(root, filename_pat))
+        _, found_path = select_artifact([(p.name, p) for p in paths], cfg=cfg,
+            placeholder=placeholder, run=str(run_sum.get("name") or "release"))
+        if not found_path:
             return "", ""
+        found_root = next(r for r in roots if found_path.is_relative_to(r))
 
         client = _get_dsm_client()
         if client is None:
@@ -4172,42 +4196,29 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
                 continue
         return "", ""
 
-    key = device_name or str(release_cfg.get("project") or "").strip()
-    key_esc = re.escape(key) if key else ""
-    if key_esc:
-        dev_pat = re.compile(rf"^archive_{key_esc}[A-Za-z0-9_-]*_.*\.tgz$", re.IGNORECASE)
-        ota_cloud_pat = re.compile(rf"^archive_OTA_CLOUD_.*{key_esc}.*\.tgz$|^sensorhub_ota_(?!sleep).+\.zip$", re.IGNORECASE)
-        ota_sleep_pat = re.compile(rf"^archive_OTA_SLEEP_.*{key_esc}.*\.tgz$|^sensorhub_ota_sleep_.*\.zip$", re.IGNORECASE)
-        factory_zip_pat = re.compile(rf".*{key_esc}.*factory.*\.zip$|^factory.*{key_esc}.*\.zip$", re.IGNORECASE)
-        ota_sign_zip_pat = re.compile(r"^watch@.*_ota_sign\.zip$|.*_ota_sign\.zip$", re.IGNORECASE)
-        ota_zip_pat = re.compile(rf".*{key_esc}.*ota.*sign.*\.zip$|.*{key_esc}.*ota.*\.zip$|ota.*sign.*\.zip$|ota.*\.zip$", re.IGNORECASE)
-        manifest_share_pat = re.compile(rf"^manifest_.*{key_esc}.*\.xml$|^manifest_{key_esc}.*\.xml$", re.IGNORECASE)
-        md5_share_pat = re.compile(rf".*{key_esc}.*md5.*\.txt$|md5\.txt$|_md5\.txt$|md5sum\.txt$", re.IGNORECASE)
-        boot_manifest_share_pat = re.compile(r"^manifest_BOOT_.*\.xml$", re.IGNORECASE)
-        recovery_manifest_share_pat = re.compile(r"^manifest_RECOVERY_.*\.xml$", re.IGNORECASE)
-    else:
-        dev_pat = re.compile(r"^archive_.*\.tgz$", re.IGNORECASE)
-        ota_cloud_pat = re.compile(r"^archive_OTA_CLOUD_.*\.tgz$|^sensorhub_ota_(?!sleep).+\.zip$", re.IGNORECASE)
-        ota_sleep_pat = re.compile(r"^archive_OTA_SLEEP_.*\.tgz$|^sensorhub_ota_sleep_.*\.zip$", re.IGNORECASE)
-        factory_zip_pat = re.compile(r"factory.*\.zip$", re.IGNORECASE)
-        ota_sign_zip_pat = re.compile(r"^watch@.*_ota_sign\.zip$|.*_ota_sign\.zip$", re.IGNORECASE)
-        ota_zip_pat = re.compile(r"ota.*sign.*\.zip$|ota.*\.zip$", re.IGNORECASE)
-        manifest_share_pat = re.compile(r"manifest_.*\.xml$", re.IGNORECASE)
-        md5_share_pat = re.compile(r"md5\.txt$|_md5\.txt$|md5sum\.txt$", re.IGNORECASE)
-        boot_manifest_share_pat = re.compile(r"^manifest_BOOT_.*\.xml$", re.IGNORECASE)
-        recovery_manifest_share_pat = re.compile(r"^manifest_RECOVERY_.*\.xml$", re.IGNORECASE)
+    dev_pat = artifact_pattern("{{REL_RELEASE_FULL_ARCHIVE}}", cfg)
+    ota_cloud_pat = artifact_pattern("{{REL_RELEASE_OTA_CLOUD_ARCHIVE}}", cfg)
+    ota_sleep_pat = artifact_pattern("{{REL_RELEASE_OTA_SLEEP_ARCHIVE}}", cfg)
+    factory_zip_pat = artifact_pattern("{{REL_RELEASE_FACTORY_TOOL_ZIP}}", cfg)
+    ota_sign_zip_pat = artifact_pattern("{{REL_RELEASE_OTA_SIGN_ZIP}}", cfg)
+    manifest_share_pat = artifact_pattern("{{REL_APP_MANIFEST_INFO}}", cfg)
+    md5_share_pat = artifact_pattern("{{REL_MD5SUM_FILE}}", cfg)
+    boot_manifest_share_pat = artifact_pattern("{{REL_BOOTLOADER_MANIFEST_INFO}}", cfg)
+    recovery_manifest_share_pat = artifact_pattern("{{REL_RECOVERY_MANIFEST_INFO}}", cfg)
 
     def _set_share(ph: str, run_sum: Dict[str, Any], pat: Pattern, what: str) -> None:
         if not run_sum:
             return
         try:
-            fname, url = _find_share_link_by_regex(run_sum, filename_regex=pat, what=what)
+            fname, url = _find_share_link_by_regex(run_sum, filename_regex=pat, what=what, cfg=cfg, placeholder=ph)
             if url:
                 if fname:
                     repl[ph] = f"{fname}|{url}"
                     repl[ph + "_NAME"] = fname
                 else:
                     repl[ph] = url
+        except ArtifactSelectionError:
+            raise
         except Exception:
             return
 
@@ -4217,8 +4228,6 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
     _set_share("{{REL_RELEASE_FACTORY_TOOL_ZIP}}", rel_sum, factory_zip_pat, "factory tool zip")
     # Prefer the explicit ota_sign archive (often from prepared extra dirs)
     _set_share("{{REL_RELEASE_OTA_SIGN_ZIP}}", rel_sum, ota_sign_zip_pat, "watch ota_sign zip")
-    if not repl.get("{{REL_RELEASE_OTA_SIGN_ZIP}}"):
-        _set_share("{{REL_RELEASE_OTA_SIGN_ZIP}}", rel_sum, ota_zip_pat, "ota zip")
 
     # Monkey/Debug OTA full package: use Debug build's archive_<project>*_*.tgz share link.
     _set_share("{{REL_MONKEY_FULL_ARCHIVE}}", dbg_sum, dev_pat, "debug full archive tgz")
@@ -4228,6 +4237,10 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
     _set_share("{{REL_RECOVERY_MANIFEST_INFO}}", rel_sum, recovery_manifest_share_pat, "recovery manifest xml")
     _set_share("{{REL_APP_MANIFEST_INFO}}", rel_sum, manifest_share_pat, "manifest xml")
     _set_share("{{REL_MD5SUM_FILE}}", rel_sum, md5_share_pat, "md5 file")
+    for ph, summary in (("{{REL_RELEASE_MD5}}", rel_sum), ("{{REL_BUILD_LOG_FILE}}", rel_sum),
+                        ("{{REL_RELEASE_SENSORHUB_OTA_ZIP}}", rel_sum), ("{{REL_RELEASE_SENSORHUB_FCT_ZIP}}", rel_sum),
+                        ("{{REL_MONKEY_SENSORHUB_OTA_ZIP}}", dbg_sum), ("{{REL_MONKEY_SENSORHUB_FCT_ZIP}}", dbg_sum)):
+        _set_share(ph, summary, artifact_pattern(ph, cfg), ph)
 
     # ── TSCAN share links ──
     tscan_links = tscan_sum.get("share_links_main", {}) if isinstance(tscan_sum.get("share_links_main"), dict) else {}
@@ -4246,6 +4259,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
             roots=roots_release,
             filename_pat=boot_manifest_share_pat,
             what="bootloader manifest xml",
+            placeholder="{{REL_BOOTLOADER_MANIFEST_INFO}}",
         )
         if url:
             if fname:
@@ -4260,6 +4274,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
             roots=roots_release,
             filename_pat=recovery_manifest_share_pat,
             what="recovery manifest xml",
+            placeholder="{{REL_RECOVERY_MANIFEST_INFO}}",
         )
         if url:
             if fname:
@@ -4275,6 +4290,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
             roots=roots_release,
             filename_pat=ota_cloud_pat,
             what="archive_OTA_CLOUD",
+            placeholder="{{REL_RELEASE_OTA_CLOUD_ARCHIVE}}",
         )
         if url:
             if fname:
@@ -4289,6 +4305,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
             roots=roots_release,
             filename_pat=dev_pat,
             what="release full archive tgz",
+            placeholder="{{REL_RELEASE_FULL_ARCHIVE}}",
         )
         if url:
             if fname:
@@ -4303,6 +4320,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
             roots=roots_release,
             filename_pat=ota_sleep_pat,
             what="archive_OTA_SLEEP",
+            placeholder="{{REL_RELEASE_OTA_SLEEP_ARCHIVE}}",
         )
         if url:
             if fname:
@@ -4317,6 +4335,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
             roots=roots_release,
             filename_pat=factory_zip_pat,
             what="factory tool zip",
+            placeholder="{{REL_RELEASE_FACTORY_TOOL_ZIP}}",
         )
         if url:
             if fname:
@@ -4331,6 +4350,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
             roots=roots_release,
             filename_pat=ota_sign_zip_pat,
             what="watch ota_sign zip",
+            placeholder="{{REL_RELEASE_OTA_SIGN_ZIP}}",
         )
         if url:
             if fname:
@@ -4338,26 +4358,13 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
                 repl["{{REL_RELEASE_OTA_SIGN_ZIP}}_NAME"] = fname
             else:
                 repl["{{REL_RELEASE_OTA_SIGN_ZIP}}"] = url
-        else:
-            fname, url = _try_dsm_share_link_from_local_file(
-                run_sum=rel_sum,
-                roots=roots_release,
-                filename_pat=ota_zip_pat,
-                what="ota zip",
-            )
-            if url:
-                if fname:
-                    repl["{{REL_RELEASE_OTA_SIGN_ZIP}}"] = f"{fname}|{url}"
-                    repl["{{REL_RELEASE_OTA_SIGN_ZIP}}_NAME"] = fname
-                else:
-                    repl["{{REL_RELEASE_OTA_SIGN_ZIP}}"] = url
-
     if not repl.get("{{REL_APP_MANIFEST_INFO}}"):
         fname, url = _try_dsm_share_link_from_local_file(
             run_sum=rel_sum,
             roots=roots_release,
             filename_pat=manifest_share_pat,
             what="manifest xml",
+            placeholder="{{REL_APP_MANIFEST_INFO}}",
         )
         if url:
             if fname:
@@ -4372,6 +4379,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
             roots=roots_release,
             filename_pat=md5_share_pat,
             what="md5 file",
+            placeholder="{{REL_MD5SUM_FILE}}",
         )
         if url:
             if fname:
@@ -4383,13 +4391,13 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
     # Single-line file content (fallback)
 
     def _set_file_single_line(ph: str, roots: List[Path], pat: Pattern) -> None:
-        for root in roots:
+        candidates = [p for root in roots for p in _find_files_by_regex(root, pat)]
+        _, selected = select_artifact([(p.name, p) for p in candidates], cfg=cfg, placeholder=ph, run="release")
+        if selected:
             try:
-                p = _pick_one(_find_files_by_regex(root, pat), what=f"{ph} in {root}")
-                repl[ph] = _collapse_to_single_line(_read_text_best_effort(p))
-                return
+                repl[ph] = _collapse_to_single_line(_read_text_best_effort(selected))
             except Exception:
-                continue
+                pass
 
     # Fallback to local file content only when a share link wasn't found/generated.
     if not repl.get("{{REL_APP_MANIFEST_INFO}}"):

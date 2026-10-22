@@ -28,7 +28,7 @@
           "op": "find",
           "name": "find release top tgz",
           "root": "${jenkins.builds.release.download.output_dir}",
-          "match": { "regex": "^archive_${release.project}_.*\\.tgz$" },
+          "match": { "regex": "^archive_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
           "save_as": "release_top_tgz"
         },
         {
@@ -51,7 +51,7 @@
           "op": "pick",
           "name": "pick OTA_CLOUD tgz from step1",
           "root": "step1_content_dir",
-          "match": { "regex": "^archive_OTA_CLOUD_.*\\.tgz$" },
+          "match": { "regex": "^archive_OTA_CLOUD_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
           "save_as": "ota_cloud_tgz",
           "optional": true
         },
@@ -67,7 +67,7 @@
           "op": "pick",
           "name": "pick OTA_SLEEP tgz from release artifacts (if present)",
           "root": "${jenkins.builds.release.download.output_dir}",
-          "match": { "regex": "^archive_OTA_SLEEP_.*\\.tgz$" },
+          "match": { "regex": "^archive_OTA_SLEEP_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
           "save_as": "ota_sleep_tgz",
           "optional": true
         },
@@ -91,7 +91,7 @@
           "op": "pick",
           "name": "pick watch ota_sign zip",
           "root": "cloud_content_dir",
-          "match": { "exact": "watch@mhs003_ota_sign.zip", "fallback_regex": ".*_ota_sign\\.zip$" },
+          "match": { "exact": "watch@mhs003_ota_sign.zip", "fallback_regex": "^watch@[^/]+_ota_sign\\.zip$" },
           "save_as": "ota_sign_zip",
           "optional": true
         },
@@ -107,7 +107,7 @@
           "op": "pick",
           "name": "pick OTA tgz (non-cloud) from step1",
           "root": "step1_content_dir",
-          "match": { "regex": "^archive_OTA_(?!CLOUD).*(?!SLEEP).*\\.tgz$" },
+          "match": { "regex": "^archive_OTA_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
           "save_as": "ota_tgz",
           "optional": true
         },
@@ -147,7 +147,7 @@
           "op": "pick",
           "name": "pick sensorhub OTA zip from release artifacts",
           "root": "${jenkins.builds.release.download.output_dir}",
-          "match": { "regex": "^sensorhub_ota_(?!sleep).+\\.zip$" },
+          "match": { "regex": "^sensorhub_ota_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.zip$" },
           "save_as": "release_ota_zip",
           "optional": true
         },
@@ -170,7 +170,7 @@
           "op": "pick",
           "name": "pick mhs003 elf from sensorhub OTA zip",
           "root": "sensorhub_ota_dir",
-          "match": { "exact": "watch@mhs003.elf", "fallback_regex": ".*mhs003\\.elf$" },
+          "match": { "exact": "watch@mhs003.elf", "fallback_regex": "^watch@[^/]+\\.elf$" },
           "save_as": "watch_elf",
           "optional": true
         },
@@ -185,7 +185,7 @@
           "op": "pick",
           "name": "pick ota sign package from sensorhub OTA zip",
           "root": "sensorhub_ota_dir",
-          "match": { "exact": "watch@mhs003_ota_sign.zip", "fallback_regex": ".*_ota_sign\\.zip$" },
+          "match": { "exact": "watch@mhs003_ota_sign.zip", "fallback_regex": "^watch@[^/]+_ota_sign\\.zip$" },
           "save_as": "ota_sign_zip",
           "optional": true
         },
@@ -200,7 +200,7 @@
           "op": "pick",
           "name": "pick OTA_SLEEP zip from release artifacts (if present)",
           "root": "${jenkins.builds.release.download.output_dir}",
-          "match": { "regex": "^sensorhub_ota_sleep_.*\\.zip$" },
+          "match": { "regex": "^sensorhub_ota_sleep_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.zip$" },
           "save_as": "ota_sleep_zip",
           "optional": true
         },
@@ -216,7 +216,7 @@
           "op": "pick",
           "name": "pick archive_BOOT tgz from step1",
           "root": "step1_content_dir",
-          "match": { "regex": "^archive_BOOT_.*\\.tgz$" },
+          "match": { "regex": "^archive_BOOT_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
           "save_as": "boot_tgz",
           "optional": true
         },
@@ -240,7 +240,7 @@
           "op": "pick",
           "name": "pick manifest_BOOT xml",
           "root": "boot_content_dir",
-          "match": { "regex": "^manifest_BOOT_.*\\.xml$" },
+          "match": { "regex": "^manifest_BOOT_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.xml$" },
           "save_as": "boot_manifest_xml",
           "optional": true
         },
@@ -256,7 +256,7 @@
           "op": "pick",
           "name": "pick archive_RECOVERY tgz from step1",
           "root": "step1_content_dir",
-          "match": { "regex": "^archive_RECOVERY_.*\\.tgz$" },
+          "match": { "regex": "^archive_RECOVERY_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
           "save_as": "recovery_tgz",
           "optional": true
         },
@@ -280,7 +280,7 @@
           "op": "pick",
           "name": "pick manifest_RECOVERY xml",
           "root": "recovery_content_dir",
-          "match": { "regex": "^manifest_RECOVERY_.*\\.xml$" },
+          "match": { "regex": "^manifest_RECOVERY_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.xml$" },
           "save_as": "recovery_manifest_xml",
           "optional": true
         },
@@ -297,7 +297,7 @@
           "name": "find debug full archive tgz (OTA整包)",
           "run": "debug",
           "root": "${jenkins.builds.debug.download.output_dir}",
-          "match": { "regex": "^archive_${release.project}[A-Za-z0-9_-]*_.*\\.tgz$" },
+          "match": { "regex": "^archive_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
           "save_as": "debug_full_archive_tgz",
           "optional": true
         }
@@ -332,7 +332,7 @@
         "mode": "nas_share",
         "run": "release",
         "from": "boot_manifest_payload",
-        "match": { "regex": "^manifest_BOOT_.*\\.xml$" },
+        "match": { "regex": "^manifest_BOOT_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.xml$" },
         "required": false
       },
       "{{REL_RECOVERY_MANIFEST_FILENAME}}": {
@@ -343,7 +343,7 @@
         "mode": "nas_share",
         "run": "release",
         "from": "recovery_manifest_payload",
-        "match": { "regex": "^manifest_RECOVERY_.*\\.xml$" },
+        "match": { "regex": "^manifest_RECOVERY_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.xml$" },
         "required": false
       },
 
@@ -354,7 +354,7 @@
       "{{REL_APP_MANIFEST_INFO}}": {
         "mode": "nas_share",
         "run": "release",
-        "match": { "regex": "^manifest_.*${release.project}.*\\.xml$" },
+        "match": { "regex": "^manifest_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.xml$" },
         "required": false
       },
 
@@ -365,7 +365,7 @@
       "{{REL_RELEASE_FULL_ARCHIVE}}": {
         "mode": "nas_share",
         "run": "release",
-        "match": { "regex": "^archive_${release.device_name}[A-Za-z0-9_-]*_.*\\.tgz$|^sensorhub_ota_.*\\.zip$|.*factory.*\\.zip$" },
+        "match": { "regex": "^archive_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
         "required": true
       },
       "{{REL_RELEASE_OTA_CLOUD_ARCHIVE_FILENAME}}": {
@@ -376,7 +376,7 @@
         "mode": "nas_share",
         "run": "release",
         "from": "ota_cloud_tgz",
-        "match": { "regex": "^archive_OTA_CLOUD_.*\\.tgz$" },
+        "match": { "regex": "^archive_OTA_CLOUD_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
         "required": true
       },
       "{{REL_RELEASE_OTA_SLEEP_ARCHIVE_FILENAME}}": {
@@ -387,7 +387,7 @@
         "mode": "nas_share",
         "run": "release",
         "from": "ota_sleep_tgz",
-        "match": { "regex": "^archive_OTA_SLEEP_.*\\.tgz$" },
+        "match": { "regex": "^archive_OTA_SLEEP_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
         "required": false
       },
       "{{REL_RELEASE_OTA_SIGN_ZIP_FILENAME}}": {
@@ -398,7 +398,7 @@
         "mode": "nas_share",
         "run": "release",
         "from": "ota_sign_payload",
-        "match": { "exact": "watch@mhs003_ota_sign.zip", "fallback_regex": ".*_ota_sign\\.zip$" },
+        "match": { "exact": "watch@mhs003_ota_sign.zip", "fallback_regex": "^watch@[^/]+_ota_sign\\.zip$" },
         "required": true
       },
       "{{REL_RELEASE_FACTORY_TOOL_ZIP_FILENAME}}": {
@@ -408,7 +408,7 @@
       "{{REL_RELEASE_FACTORY_TOOL_ZIP}}": {
         "mode": "nas_share",
         "run": "release",
-        "match": { "regex": ".*factory.*\\.zip$" }
+        "match": { "regex": "^(?:${release.project}_factory_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?|factory_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?)\\.zip$" }
       },
 
       "{{REL_RELEASE_SENSORHUB_OTA_ZIP_FILENAME}}": {
@@ -418,7 +418,7 @@
       "{{REL_RELEASE_SENSORHUB_OTA_ZIP}}": {
         "mode": "nas_share",
         "run": "release",
-        "match": { "regex": "^sensorhub_ota_(?!sleep).+\\.zip$" }
+        "match": { "regex": "^sensorhub_ota_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.zip$" }
       },
       "{{REL_RELEASE_SENSORHUB_FCT_ZIP_FILENAME}}": {
         "mode": "filename_for_share",
@@ -427,7 +427,7 @@
       "{{REL_RELEASE_SENSORHUB_FCT_ZIP}}": {
         "mode": "nas_share",
         "run": "release",
-        "match": { "regex": "^sensorhub_fct_.*\\.zip$" }
+        "match": { "regex": "^sensorhub_fct_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.zip$" }
       },
 
       "{{REL_MONKEY_FULL_ARCHIVE_FILENAME}}": {
@@ -438,7 +438,7 @@
         "mode": "nas_share",
         "run": "debug",
         "from": "debug_full_archive_tgz",
-        "match": { "regex": "^archive_${release.project}[A-Za-z0-9_-]*_.*\\.tgz$" },
+        "match": { "regex": "^archive_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.tgz$" },
         "required": false
       },
 
@@ -449,7 +449,7 @@
       "{{REL_MONKEY_SENSORHUB_OTA_ZIP}}": {
         "mode": "nas_share",
         "run": "debug",
-        "match": { "regex": "^sensorhub_ota_(?!sleep).+\\.zip$" },
+        "match": { "regex": "^sensorhub_ota_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.zip$" },
         "required": false
       },
       "{{REL_MONKEY_SENSORHUB_FCT_ZIP_FILENAME}}": {
@@ -459,7 +459,7 @@
       "{{REL_MONKEY_SENSORHUB_FCT_ZIP}}": {
         "mode": "nas_share",
         "run": "debug",
-        "match": { "regex": "^sensorhub_fct_.*\\.zip$" },
+        "match": { "regex": "^sensorhub_fct_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:_.*)?\\.zip$" },
         "required": false
       },
 
@@ -470,13 +470,13 @@
       "{{REL_MD5SUM_FILE}}": {
         "mode": "nas_share",
         "run": "release",
-        "match": { "regex": ".*md5.*\\.txt$|md5\\.txt$|_md5\\.txt$|md5sum\\.txt$" }
+        "match": { "regex": "^(?:${release.project}(?:_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)?_md5|md5(?:sum)?)\\.txt$" }
       },
 
       "{{REL_RELEASE_MD5}}": {
         "mode": "nas_share",
         "run": "release",
-        "match": { "regex": "^${release.project}_md5\\.txt$" },
+        "match": { "regex": "^(?:${release.project}(?:_[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)?_md5|md5(?:sum)?)\\.txt$" },
         "required": false
       },
 
