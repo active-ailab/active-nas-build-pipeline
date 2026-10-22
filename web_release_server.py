@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from collections import OrderedDict
+from config_loader import read_json_with_base
 
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, stream_with_context
@@ -3208,11 +3209,13 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     # 使用 template 作为基础，合并用户数据
     base_cfg = _build_new_project_template(project)
 
-    # 如果已有配置文件，保留其 nas.base_dir 和 feishu token
+    # 续跑保留项目的构建模式和构建记录；空表单不代表删除原 Jenkins URL。
+    existing = {}
     existing_path = SCRIPT_DIR / f"gqf_{project}.json"
     if existing_path.exists():
         try:
-            existing = json.loads(existing_path.read_text(encoding="utf-8"))
+            existing = read_json_with_base(existing_path)
+            base_cfg["vars"].update(existing.get("vars") or {})
             if "nas" in existing and existing["nas"].get("remote", {}).get("base_dir"):
                 base_cfg["nas"]["remote"]["base_dir"] = existing["nas"]["remote"]["base_dir"]
             if "feishu" in existing and existing["feishu"].get("template_node_token"):
@@ -3223,7 +3226,9 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     if "release" in form_data:
         base_cfg["release"] = {**base_cfg.get("release", {}), **form_data["release"]}
     if "vars" in form_data:
-        base_cfg["vars"] = {**base_cfg.get("vars", {}), **form_data["vars"]}
+        submitted_vars = {k: v for k, v in form_data["vars"].items()
+                          if v is not None and (not isinstance(v, str) or v.strip())}
+        base_cfg["vars"] = {**base_cfg.get("vars", {}), **submitted_vars}
     if "feishu" in form_data and form_data["feishu"].get("template_node_token"):
         base_cfg["feishu"]["template_node_token"] = form_data["feishu"]["template_node_token"]
 
@@ -3245,8 +3250,16 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     # 填入用户提供的 Jenkins build URL
     base_cfg.setdefault("jenkins", OrderedDict())
     base_cfg["jenkins"].setdefault("builds", OrderedDict())
-    base_cfg["jenkins"]["builds"]["debug"] = OrderedDict([("build_url", (debug_url.rstrip("/") + "/") if debug_url else "")])
-    base_cfg["jenkins"]["builds"]["release"] = OrderedDict([("build_url", (release_url.rstrip("/") + "/") if release_url else "")])
+    saved_builds = (existing.get("jenkins") or {}).get("builds") or {}
+    for name, submitted_url in (("release", release_url), ("debug", debug_url)):
+        saved = dict(saved_builds.get(name) or {})
+        chosen_url = submitted_url or str(saved.get("build_url") or "").strip()
+        saved["build_url"] = chosen_url.rstrip("/") + "/" if chosen_url else ""
+        if submitted_url:
+            saved.pop("build_number", None)
+        base_cfg["jenkins"]["builds"][name] = saved
+    release_url = base_cfg["jenkins"]["builds"]["release"]["build_url"]
+    debug_url = base_cfg["jenkins"]["builds"]["debug"]["build_url"]
 
     # 清除运行时字段
     base_cfg["jenkins"]["builds"]["debug"].pop("download", None)

@@ -2828,6 +2828,24 @@ def _dsl_extract_zip(*, src: Path, dest: Path, dry_run: bool) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(src, "r") as zf:
         zf.extractall(dest)
+
+
+def _dsl_prepare_paths(dsl_cfg: Dict[str, Any]) -> Dict[str, Path]:
+    prep = dsl_cfg.get("prepare") or {}
+    if not isinstance(prep, dict):
+        raise RuntimeError("DSL: prepare must be an object")
+    flow = prep.get("flow") or {}
+    if not isinstance(flow, dict):
+        raise RuntimeError("DSL: prepare.flow must be an object")
+    paths = {}
+    for key in ("work_dir", "upload_payload_dir"):
+        value = str(flow.get(key) or "").strip()
+        if not value or "${" in value:
+            raise RuntimeError(f"DSL: prepare.flow.{key} is missing or unresolved")
+        paths[key] = Path(value).expanduser().resolve()
+    return paths
+
+
 def _dsl_execute_prepare_flow(
     *,
     cfg: Dict[str, Any],
@@ -2854,17 +2872,13 @@ def _dsl_execute_prepare_flow(
     if not isinstance(flow, dict):
         raise RuntimeError("DSL: prepare.flow must be an object")
 
-    work_dir = Path(str(flow.get("work_dir") or "")).expanduser().resolve()
-    upload_payload_dir = Path(str(flow.get("upload_payload_dir") or "")).expanduser().resolve()
+    paths = _dsl_prepare_paths(dsl_cfg)
+    work_dir = paths["work_dir"]
+    upload_payload_dir = paths["upload_payload_dir"]
     clean = bool(flow.get("clean", False))
     defaults = flow.get("defaults") or {}
     if not isinstance(defaults, dict):
         defaults = {}
-
-    if not work_dir:
-        raise RuntimeError("DSL: prepare.flow.work_dir is missing")
-    if not upload_payload_dir:
-        raise RuntimeError("DSL: prepare.flow.upload_payload_dir is missing")
 
     if dry_run:
         print(f"DSL Prepare: dry-run; work_dir={work_dir}")
@@ -3211,6 +3225,8 @@ def _build_placeholder_replacements_from_dsl(
             raise RuntimeError(f"DSL: mapping for {phs} must be an object")
 
         mode = str(rule.get("mode") or "").strip().lower()
+        if mode == "filename_for_share":
+            continue  # Resolve after nas_share, including remote-only files.
         required = bool(rule.get("required", False))
         run_name = str(rule.get("run") or "").strip().lower() or "release"
         run_sum = _get_run_sum(run_name)
@@ -3284,53 +3300,6 @@ def _build_placeholder_replacements_from_dsl(
             if filename:
                 _filename_for_share[phs] = filename
 
-        elif mode == "filename_for_share":
-            # Extract filename from corresponding nas_share placeholder by parsing its rule
-            share_ph = str(rule.get("share_placeholder") or "").strip()
-            if share_ph in mappings:
-                share_rule = mappings[share_ph]
-                if isinstance(share_rule, dict):
-                    # Re-resolve the local path for the corresponding nas_share placeholder
-                    share_run_name = str(share_rule.get("run") or "").strip().lower() or "release"
-                    share_run_sum = _get_run_sum(share_run_name)
-                    
-                    local_path_for_share: Optional[Path] = None
-                    if share_rule.get("from"):
-                        ref = str(share_rule.get("from") or "").strip()
-                        v = vars.get(ref)
-                        if isinstance(v, Path):
-                            local_path_for_share = v
-                        elif isinstance(v, str) and v.strip():
-                            local_path_for_share = Path(v).expanduser().resolve()
-                    
-                    if local_path_for_share is None and isinstance(share_rule.get("match"), dict):
-                        # Resolve local file by match within run roots
-                        m = share_rule.get("match") or {}
-                        mon = str(share_rule.get("match_on") or "name").strip().lower() or "name"
-                        roots: List[Path] = []
-                        for key in ("local_dir", "out_dir"):
-                            vroot = str(share_run_sum.get(key) or "").strip()
-                            if vroot:
-                                roots.append(Path(vroot).expanduser().resolve())
-                        for x in (share_run_sum.get("extra_dirs") or []):
-                            xs = str(x or "").strip()
-                            if xs:
-                                roots.append(Path(xs).expanduser().resolve())
-                        
-                        candidates: List[Path] = []
-                        for r in roots:
-                            candidates.extend(_dsl_match_files(root=r, match=m, match_on=mon))
-                        if candidates:
-                            local_path_for_share = _dsl_pick_one(candidates, expect=str(share_rule.get("expect") or "one"), select=str(share_rule.get("select") or "shortest_path"), what=f"{share_ph} local match")
-                    
-                    # Extract filename from resolved path
-                    if local_path_for_share:
-                        val = local_path_for_share.name
-                    else:
-                        val = ""
-            else:
-                val = ""
-
         else:
             raise RuntimeError(f"DSL: unsupported placeholder mode={mode!r} for {phs}")
 
@@ -3344,6 +3313,19 @@ def _build_placeholder_replacements_from_dsl(
             out[phs] = ""
         else:
             out[phs] = "" if val is None else str(val)
+
+    # Filename mappings precede link mappings in many templates. Resolve them
+    # after all links, so they also work when local payload files were cleaned.
+    for ph, rule in mappings.items():
+        if not isinstance(rule, dict) or str(rule.get("mode") or "").strip().lower() != "filename_for_share":
+            continue
+        share_ph = str(rule.get("share_placeholder") or "").strip()
+        filename = _filename_for_share.get(share_ph, "")
+        out[str(ph)] = filename
+        if rule.get("required") and not filename:
+            if missing_policy == "error":
+                raise RuntimeError(f"DSL: required placeholder missing: {ph}")
+            print(f"WARN: DSL required placeholder missing (skip): {ph}", file=sys.stderr)
 
     # Add changelog link if enabled
     changelog_link = _build_changelog_link(cfg=cfg)
@@ -5062,23 +5044,26 @@ def _generate_share_links_from_remote(
     username: str,
     password: str,
     remote_dir: str,
+    existing_links: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
-    """skip-upload 兜底：本地 payload 目录缺失/为空时，从 DSM 远端列顶层文件并逐个建分享链接。
+    """skip-upload 补齐：列 NAS 顶层文件，为本地清单缺少的产物创建分享链接。
 
     返回 {文件名: 分享链接}。用于「直接生成文档」补跑且本地产物已被 LRU 清理的场景：
     NAS 远端文件仍在，但本地已无文件可遍历，此时按远端目录补齐链接，避免占位符全空。
     """
     remote_dir = remote_dir.rstrip("/")
-    print(f"Share links (remote fallback): logging into DSM API: {dsm_base_url}")
+    print(f"Share links (remote completion): logging into DSM API: {dsm_base_url}")
     client = SynologyDsmClient(dsm_base_url, verify_tls=dsm_verify_tls, timeout_sec=timeout_sec)
     client.login(username=username, password=password)
-    links: Dict[str, str] = {}
+    links: Dict[str, str] = dict(existing_links or {})
     try:
         names = client.list_files(folder_path=remote_dir)
         if not names:
             print(f"WARN: no files listed on remote dir: {remote_dir}")
-            return {}
+            return links
         for idx, fname in enumerate(names, start=1):
+            if links.get(fname):
+                continue
             remote_path = f"{remote_dir}/{fname}"
             try:
                 share_url = client.create_share_link(path=remote_path)
@@ -5402,7 +5387,9 @@ def main() -> int:
         flow0 = (((dsl_raw.get("prepare") or {}) if isinstance(dsl_raw.get("prepare"), dict) else {}).get("flow") or {})
         if not isinstance(flow0, dict):
             raise SystemExit(f"Invalid DSL prepare.flow (expected object): {dsl_path}")
-        cfg_prepare2 = (cfg.get("prepare") or {}) if isinstance(cfg.get("prepare"), dict) else {}
+        cfg_prepare2 = dict(cfg.get("prepare") or {}) if isinstance(cfg.get("prepare"), dict) else {}
+        # DSL 的路径和 NAS extra_local_dirs 一样，以配置文件目录为基准。
+        cfg_prepare2["workspace_dir"] = str(_resolve_cfg_path(cfg_prepare2.get("workspace_dir") or "work/prepare"))
 
         flow_cur: Any = flow0
         for _ in range(6):
@@ -5417,7 +5404,9 @@ def main() -> int:
         ctx2 = dict(cfg)
         ctx2["prepare"] = {**cfg_prepare2, "flow": flow1}
         dsl_cfg = _expand_placeholders(dsl_raw, ctx2)
-        dsl_runtime = {"dsl_path": str(dsl_path), "vars": {}}
+        # 跳过解压也需要目录元数据，不能把空路径解析为仓库根目录。
+        flow_paths = _dsl_prepare_paths(dsl_cfg)
+        dsl_runtime = {"dsl_path": str(dsl_path), "vars": {}, **flow_paths}
 
     uploader_script = Path(__file__).with_name("nas_webdav_upload.py")
     if not uploader_script.exists():
@@ -5671,14 +5660,6 @@ def main() -> int:
             )
             dsl_runtime.update(res)
 
-            # Ensure payload dir is uploaded/shared for both runs.
-            try:
-                payload_dir = Path(str(res["upload_payload_dir"]))
-                if str(payload_dir) not in [str(x) for x in extra_local_dirs]:
-                    extra_local_dirs.append(str(payload_dir))
-            except Exception:
-                pass
-
         upload_spec = uploads_by_name.get(name)
         if not upload_spec:
             raise RuntimeError(f"Missing nas.uploads entry for '{name}'")
@@ -5708,13 +5689,11 @@ def main() -> int:
             if not extra_local_dirs:
                 extra_local_dirs = [str(prepared_dir)]
 
-        if prepare_mode.strip().lower() in ("placeholders_dsl", "dsl") and dsl_runtime is not None:
-            try:
-                prepared_dir = Path(str(dsl_runtime.get("upload_payload_dir") or "")).expanduser().resolve()
-                if str(prepared_dir).strip():
-                    print(f"Prepare: staged files in: {prepared_dir}")
-            except Exception:
-                prepared_dir = None
+        if name == "release" and dsl_runtime is not None:
+            prepared_dir = Path(dsl_runtime["upload_payload_dir"])
+            if str(prepared_dir) not in extra_local_dirs:
+                extra_local_dirs.append(str(prepared_dir))
+            print(f"Prepare: {'reuse' if args.skip_prepare else 'staged'} files in: {prepared_dir}")
 
         if args.skip_upload:
             print("Skip NAS upload.")
@@ -5742,20 +5721,8 @@ def main() -> int:
                             remote_dir=remote_dir,
                             local_dir=Path(local_dir).expanduser().resolve(),
                         )
-                        # 本地 payload 目录可能已被 LRU 清理删除，此时远端仍有文件：
-                        # 回退为直接列远端顶层目录逐个建链接，避免 nas_share 占位符全空。
-                        if not share_links_main:
-                            share_links_main = _generate_share_links_from_remote(
-                                dsm_base_url=dsm_base_url,
-                                dsm_verify_tls=dsm_verify_tls,
-                                timeout_sec=nas_timeout_sec,
-                                username=dsm_user,
-                                password=dsm_pass,
-                                remote_dir=remote_dir,
-                            )
                         for extra in extra_local_dirs:
                             extra_path = Path(str(extra)).expanduser().resolve()
-                            # extra 目录本地缺失时无需再列远端：main 兜底已覆盖远端顶层全部文件。
                             share_links_extra[str(extra_path)] = _generate_and_print_share_links(
                                 dsm_base_url=dsm_base_url,
                                 dsm_verify_tls=dsm_verify_tls,
@@ -5767,6 +5734,19 @@ def main() -> int:
                             )
                     except Exception as e:
                         print(f"WARN: share link generation (skip-upload mode) failed: {e}", file=sys.stderr)
+                    # 本地列表非空也可能不完整（解压产物已被清理），必须从 NAS
+                    # 补齐额外文件，不能只在主目录没有任何文件时才回退。
+                    try:
+                        known_links = dict(share_links_main)
+                        for links in share_links_extra.values():
+                            known_links.update(links)
+                        share_links_main = _generate_share_links_from_remote(
+                            dsm_base_url=dsm_base_url, dsm_verify_tls=dsm_verify_tls,
+                            timeout_sec=nas_timeout_sec, username=dsm_user, password=dsm_pass,
+                            remote_dir=remote_dir, existing_links=known_links,
+                        )
+                    except Exception as e:
+                        print(f"WARN: NAS remote share-link completion failed: {e}", file=sys.stderr)
 
             if name == _last_build:
                 _notify_base_stage(cfg, "上传", "跳过")

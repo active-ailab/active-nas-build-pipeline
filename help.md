@@ -111,6 +111,10 @@ python .\release_pipeline_run.py --config .\release_pipeline_config.json --only 
 
 > 提示：即使 `--skip-upload`，只要不加 `--skip-share`，脚本仍会尝试对“远端已存在的同名文件”生成分享链接。
 
+仅续跑文档时，可以同时跳过下载、解压和上传。此时会保留 payload 目录元数据，并检查当前 NAS 版本目录，补齐本地清单缺少的签名包、OTA_CLOUD、BOOT/RECOVERY manifest 和编译日志链接；本地仅剩部分文件也不会漏查远端。对应的文件名占位符从已解析的链接中取值，不依赖本地文件仍然存在。
+
+网页直接生成文档时，Jenkins 链接留空会复用该项目已保存的构建 URL；手动填写的链接优先。`{{REL_CI_BUILD_URL}}` 来自这条构建记录，与 NAS 文件链接分别解析。
+
 ---
 
 ## 5. 主配置文件说明（release_pipeline_config.json）
