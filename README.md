@@ -163,3 +163,12 @@ MHS003S 平台：oslo
 - 敏感凭证（Jenkins/NAS 密码、飞书 secret、API key）已外置到 `.env`，**不再随代码提交**，见「凭证配置」。
 - 飞书 user token 为个人凭证、会过期，团队成员需各自执行 `lark-cli auth login` 授权。
 - 运行时产物（`work/`、`output/`、`*.bak.*` 等）已通过 `.gitignore` 排除，不入库。
+
+### 构建触发方式
+
+MHS003、MHS003S、NXP595/Apollo4/Apollo5 均支持两种方式，默认分开触发：
+
+- **debug&release**：仅触发一个 Jenkins 任务，传入 `BUILD_RELEASE=debug&release`；输入 release 三段版本号，debug 使用相同前缀，第四位由 Jenkins 按 pairRule 分配。产物按四段版本号末位分流：奇数留在 release，偶数移入 debug（含 Monkey），保留子目录结构，再分别执行项目现有的解包、NAS 上传和文档链接生成流程。
+- **分开触发**：分别提交 release、debug 两个任务，沿用各自版本号和产物处理流程。
+
+命令行配置对应 `vars.build_release_mode` 的 `single` / `split`；未配置时沿用分开触发。NXP 系列仍使用 HuamiOS Job，MHS 系列使用 HuamiOS_multi_platform Job。单任务方式要求 Jenkins Job 支持该参数及上述版本号配对规则。

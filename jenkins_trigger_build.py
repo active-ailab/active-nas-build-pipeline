@@ -1409,8 +1409,8 @@ def main() -> int:
                     print(f"\n== Trigger mode: ASYNC (Release + Debug parallel) ==")
 
                 print(f"\n== Trigger RELEASE ({job_key}) ==")
-                # debug&release 单任务模式（multi_platform 二合一）：
-                # 仅当项目配置 vars.build_release_mode=single 时生效（MHS 二合一专用，NXP 不配置走原双任务逻辑）
+                # debug&release 单任务模式（所有平台）：
+                # 仅当项目配置 vars.build_release_mode=single 时生效（未配置则保持原双任务逻辑）
                 build_release_mode = str((cfg.get("vars") or {}).get("build_release_mode") or "").strip().lower()
                 single_task_mode = (build_release_mode == "single")
                 rel_raw = _get_trigger_params(cfg, "release", platform_key)

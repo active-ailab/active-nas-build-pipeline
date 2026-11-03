@@ -526,31 +526,19 @@ function updateStepStatus(c, t) {
 }
 
 function toggleBuildReleaseModeVisibility() {
-  const isMhs = isMhsPlatform();
-  // debug&release 触发方式 radio：仅 MHS 平台显示；NXP 强制回到「分开触发」（保持原有双任务逻辑）
   const buildReleaseWrap = document.getElementById('buildReleaseModeWrap');
-  if (buildReleaseWrap) {
-    buildReleaseWrap.classList.toggle('hidden', !isMhs);
-    if (!isMhs) {
-      const splitRadio = document.querySelector('input[name="build_release_mode"][value="split"]');
-      if (splitRadio) splitRadio.checked = true;
-      handleBuildReleaseModeChange();
-    }
-  }
+  if (buildReleaseWrap) buildReleaseWrap.classList.remove('hidden');
+  handleBuildReleaseModeChange();
 }
 
-// ================== debug&release 单任务模式（MHS 二合一专用） ==================
+// ================== debug&release 单任务模式（所有平台） ==================
 function getBuildReleaseMode() {
   const el = document.querySelector('input[name="build_release_mode"]:checked');
   return (el && el.value) || 'split';
 }
 
-function isMhsPlatform() {
-  return selectedPlatform === 'MHS003' || selectedPlatform === 'MHS003S';
-}
-
 function isBuildReleaseSingle() {
-  return isMhsPlatform() && getBuildReleaseMode() === 'single';
+  return getBuildReleaseMode() === 'single';
 }
 
 function handleBuildReleaseModeChange() {
@@ -2474,7 +2462,7 @@ async function runDirectPipeline() {
   const ver_release = document.getElementById('ver_release')?.value.trim() || '';
   // debug&release 单任务模式：debug 版本号前三段与 release 相同，第四位由 Jenkins 后台按 pairRule 分配
   const ver_debug = isBuildReleaseSingle() ? ver_release : (document.getElementById('ver_debug')?.value.trim() || '');
-  const build_release_mode = isMhsPlatform() ? getBuildReleaseMode() : '';
+  const build_release_mode = getBuildReleaseMode();
   const ver_fct = getFctVersionName();  // 勾选自定义则取输入框值，否则跟随 release 版本号
   const diff_name = document.getElementById('diff_name')?.value.trim() || '';
   const diff_code = document.getElementById('diff_code')?.value.trim() || '';
@@ -2558,7 +2546,7 @@ async function nextStep7() {
   const ver_release = document.getElementById('ver_release')?.value.trim() || '';
   // debug&release 单任务模式：debug 版本号前三段与 release 相同，第四位由 Jenkins 后台按 pairRule 分配
   const ver_debug = isBuildReleaseSingle() ? ver_release : (document.getElementById('ver_debug')?.value.trim() || '');
-  const build_release_mode = isMhsPlatform() ? getBuildReleaseMode() : '';
+  const build_release_mode = getBuildReleaseMode();
   const ver_fct = getFctVersionName();  // 勾选自定义则取输入框值，否则跟随 release 版本号
   const diff_name = document.getElementById('diff_name')?.value.trim() || '';
   const diff_code = document.getElementById('diff_code')?.value.trim() || '';

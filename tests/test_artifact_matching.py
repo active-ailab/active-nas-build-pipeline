@@ -71,6 +71,23 @@ class ArtifactMappingTests(unittest.TestCase):
         return pipeline._build_placeholder_replacements_from_dsl(cfg=self.cfg, run_summaries=self.summaries(files),
             dsl_cfg=pipeline._expand_placeholders(dsl or self.dsl, self.cfg), dsl_runtime={"vars": {}})
 
+    def test_nxp_single_build_document_links_use_paired_artifacts(self):
+        for project in ("stuttgart", "toulouse", "toulouseh", "fuji"):
+            with self.subTest(project=project):
+                self.cfg["release"].update(project=project, device_name=project)
+                release_files = [f.replace("cologne", project) for f in RELEASE.values()]
+                debug_files = [f.replace("cologne", project) for f in DEBUG.values()]
+                runs = []
+                for run, files in (("release", release_files), ("debug", debug_files)):
+                    runs.append({"name": run, "share_links_source": "nas",
+                                 "remote_dir": "/offline/" + run,
+                                 "share_links_main": {f: self.url(f) for f in files}})
+                mapping = pipeline._build_placeholder_replacements_from_dsl(
+                    cfg=self.cfg, run_summaries=runs,
+                    dsl_cfg=pipeline._expand_placeholders(self.dsl, self.cfg), dsl_runtime={"vars": {}})
+                for key, filename in list(RELEASE.items()) + list(DEBUG.items()):
+                    self.assert_link(mapping, key, filename.replace("cologne", project))
+
     def assert_link(self, mapping, placeholder, filename):
         self.assertEqual(mapping[placeholder], filename + "|" + self.url(filename), placeholder)
 

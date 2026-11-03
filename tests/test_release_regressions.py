@@ -130,6 +130,22 @@ class ArtifactTests(OfflineTest):
         self.assertEqual([p.name for p in self.dst.iterdir()], ["archive_1.2.1.10.tgz"])
         self.assertTrue((self.src / "archive_1.2.1.11.tgz").exists())
 
+    def test_nested_platform_artifacts_preserve_paths(self):
+        for folder in ("nxp595", "apollo4", "apollo5"):
+            nested = self.src / folder / "artifacts"
+            nested.mkdir(parents=True)
+            (nested / "archive_1.2.1.10.tgz").write_text("debug")
+            (nested / "archive_1.2.1.11.tgz").write_text("release")
+            (nested / "build-info.txt").write_text("info")
+        pipeline._split_artifacts_by_parity(
+            src_dir=self.src, dst_dir=self.dst, dry_run=False, reset_destination=True)
+        for folder in ("nxp595", "apollo4", "apollo5"):
+            relative = Path(folder) / "artifacts"
+            self.assertEqual((self.dst / relative / "archive_1.2.1.10.tgz").read_text(), "debug")
+            self.assertFalse((self.src / relative / "archive_1.2.1.10.tgz").exists())
+            self.assertTrue((self.src / relative / "archive_1.2.1.11.tgz").exists())
+            self.assertTrue((self.src / relative / "build-info.txt").exists())
+
     def test_resume_preserves_existing_debug(self):
         pipeline._split_artifacts_by_parity(src_dir=self.src, dst_dir=self.dst, dry_run=False)
         self.assertTrue((self.dst / "archive_0.9.1.8.tgz").exists())
@@ -194,6 +210,32 @@ class PlatformTests(OfflineTest):
         self.assertEqual(jenkins._run_tscan_standalone(args, cfg, Path("offline.json"),
                          jenkins.JenkinsAuth("offline", "offline"), None, None), 0)
         self.assertEqual(trigger.call_args[1]["parameters"]["PLATFORM_SELECT"], "mhs003s")
+
+    def test_nxp_single_and_split_trigger_counts(self):
+        temp = Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir=str(ROOT / "output"))))
+        for name in ("_maybe_notify_webhook_text", "_send_bot_notification", "_notify_base_stage"):
+            self.patch(jenkins, name)
+        self.patch(jenkins, "_try_get_crumb", return_value=None)
+        self.patch(jenkins, "_poll_queues_for_builds", return_value={})
+        self.patch(jenkins, "_poll_build_results", return_value={})
+        trigger = self.patch(jenkins, "_trigger_build", return_value="offline-queue")
+        for mode, expected in (("single", ["debug&release"]), ("split", ["release", "debug"])):
+            with self.subTest(mode=mode):
+                cfg = read_json_with_base(ROOT / "gqf_stuttgart.json")
+                cfg["vars"].update(build_tscan="no", build_release_mode=mode)
+                cfg["changelog"]["enabled"] = False
+                cfg["jenkins"]["triggers"].update(modes="async", auto_run_pipeline=False)
+                cfg["jenkins"]["auth"] = {"username": "offline", "password": "offline"}
+                cp = temp / "gqf_offline.json"
+                cp.write_text(json.dumps(cfg), encoding="utf-8")
+                self.patch(sys, "argv", ["jenkins", "--config", str(cp)])
+                trigger.reset_mock()
+                self.assertEqual(jenkins.main(), 0)
+                self.assertEqual([c[1]["parameters"]["BUILD_RELEASE"]
+                                  for c in trigger.call_args_list], expected)
+                for call in trigger.call_args_list:
+                    self.assertTrue(call[1]["job_url"].rstrip("/").endswith("/HuamiOS"))
+                    self.assertNotIn("PLATFORM_SELECT", call[1]["parameters"])
 
     def test_full_build_adds_platform_to_release_debug_and_tscan(self):
         temp = Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir=str(ROOT / "output"))))

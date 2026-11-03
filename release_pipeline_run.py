@@ -2523,7 +2523,7 @@ def _split_artifacts_by_parity(
     re_ver_tail = re.compile(r"(\d+)\.(\d+)\.(\d+)\.(\d+)")
     moved = 0
     kept = 0
-    for p in sorted(src_dir.iterdir()):
+    for p in sorted(src_dir.rglob("*")):
         if not p.is_file():
             continue
         m = re_ver_tail.search(p.name)
@@ -2532,10 +2532,10 @@ def _split_artifacts_by_parity(
             continue
         tail = int(m.group(4))
         if tail % 2 == 0:
-            target = dst_dir / p.name
+            target = dst_dir / p.relative_to(src_dir)
             print(f"  [split] debug/monkey: {p.name} -> {dst_dir}")
             if not dry_run:
-                dst_dir.mkdir(parents=True, exist_ok=True)
+                target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():
                     try:
                         target.unlink()
@@ -5492,7 +5492,7 @@ def main() -> int:
     builds = cfg["jenkins"]["builds"]
     run_summaries: List[Dict[str, Any]] = []
 
-    # debug&release 单任务模式（MHS 二合一）：一个 Jenkins run 同时产出
+    # debug&release 单任务模式（所有平台）：一个 Jenkins run 同时产出
     # release（版本号末尾奇数）与 debug/monkey（末尾偶数）两套产物。
     # 处理方式：release run 下载全部产物后按版本号奇偶拆成两个下载目录，
     # debug 不再单独下载，后续解压/上传/文档复用现有双 run 链路。
