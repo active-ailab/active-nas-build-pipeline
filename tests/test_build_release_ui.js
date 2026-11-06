@@ -23,3 +23,13 @@ for (const platform of ['MHS003', 'MHS003S', 'NXP595/Apollo4/Apollo5']) {
 assert(!source.includes('isMhsPlatform'));
 assert.strictEqual((source.match(/const build_release_mode = getBuildReleaseMode\(\);/g) || []).length, 2);
 console.log('Platform trigger mode UI checks passed.');
+
+const routes = {};
+vm.createContext(routes);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/js/platform_config.js'), 'utf8'), routes);
+vm.runInContext(`
+  if (!platformDevices['NXP595/Apollo4/Apollo5'].includes('fuji')) throw new Error('Fuji entry moved');
+`, routes);
+assert(!source.includes('getProjectBuildRoute'));
+assert(source.includes('window._jenkinsJobUrl || JENKINS_PLATFORM_URLS[platform]'));
+console.log('Project entry and configured Jenkins link checks passed.');

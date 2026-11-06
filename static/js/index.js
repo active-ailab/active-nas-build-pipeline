@@ -1057,7 +1057,7 @@ async function startTscanBuildFromStep5() {
     platform: selectedPlatform,
     user_id: currentUserId,
     jenkins_auth: getJenkinsAuth(),
-    jenkins_job_url: (platformJenkinsJobUrl && platformJenkinsJobUrl[selectedPlatform]) || '',
+    jenkins_job_url: platformJenkinsJobUrl[selectedPlatform] || '',
   };
 
   try {
@@ -1069,6 +1069,7 @@ async function startTscanBuildFromStep5() {
     const data = await resp.json();
     if (!data.ok) { alert('启动 TSCAN 构建失败: ' + (data.error || '未知错误')); return; }
     const taskId = data.task_id;
+    window._jenkinsJobUrl = data.jenkins_job_url || '';
     // 重置进度步骤为 TSCAN 专用
     compileSteps = [
       { name: 'TSCAN构建', status: 'waiting', percent: 0 },
@@ -2513,6 +2514,7 @@ async function runDirectPipeline() {
       return;
     }
     taskId = result.task_id;
+    window._jenkinsJobUrl = result.jenkins_job_url || '';
   } catch (err) {
     alert('请求失败：' + err.message);
     return;
@@ -2585,8 +2587,8 @@ async function nextStep7() {
     feishu: {
       template_node_token: wiki_token,
     },
-    jenkins_job_url: (platformJenkinsJobUrl && platformJenkinsJobUrl[selectedPlatform]) || '',
-    platform_select: (platformSelectByPlatform && platformSelectByPlatform[selectedPlatform]) || '',
+    jenkins_job_url: platformJenkinsJobUrl[selectedPlatform] || '',
+    platform_select: platformSelectByPlatform[selectedPlatform] || '',
     jenkins_auth: getJenkinsAuth(),
     user_id: currentUserId,
     notification_open_id: getNotifyOpenId(),
@@ -2606,6 +2608,7 @@ async function nextStep7() {
       return;
     }
     taskId = result.task_id;
+    window._jenkinsJobUrl = result.jenkins_job_url || '';
     console.log('配置已保存到 JSON 文件:', result.config_file, '任务ID:', taskId);
   } catch (err) {
     alert('保存配置时发生网络错误：' + err.message);
@@ -2697,6 +2700,7 @@ function switchChangelogTask(taskId) {
   if (t) {
     window._taskType = t.task_type || '';
     window._taskPlatform = t.platform_select || '';
+    window._jenkinsJobUrl = t.jenkins_job_url || '';
   }
   updateJenkinsBtn();
   localStorage.setItem('activeTaskId', taskId);
@@ -2738,6 +2742,7 @@ function switchTscanTask(taskId) {
   if (t) {
     window._taskType = t.task_type || '';
     window._taskPlatform = t.platform_select || '';
+    window._jenkinsJobUrl = t.jenkins_job_url || '';
   }
   updateJenkinsBtn();
   window._isTscanStandalone = true;
@@ -2844,6 +2849,7 @@ function switchTask(taskId) {
   if (t) {
     window._taskType = t.task_type || '';
     window._taskPlatform = t.platform_select || '';
+    window._jenkinsJobUrl = t.jenkins_job_url || '';
   }
   updateJenkinsBtn();
   // 恢复 btnStopBuild 默认文字
@@ -3047,7 +3053,7 @@ function startCompileTask(taskId, taskType) {
   localStorage.setItem('activeTaskId', taskId);
   // 立即设置平台和任务类型（从表单已选），Jenkins 按钮不用等任务列表刷新
   window._taskType = taskType || 'build';
-  window._taskPlatform = (platformSelectByPlatform && platformSelectByPlatform[selectedPlatform]) || '';
+  window._taskPlatform = platformSelectByPlatform[selectedPlatform] || '';
   updateJenkinsBtn();
   document.getElementById('currentTaskTitle').textContent = '任务: ' + taskId;
   // 重置
@@ -3458,7 +3464,7 @@ const JENKINS_PLATFORM_URLS = {
 
 function openJenkinsJob() {
   const platform = window._taskPlatform;
-  const url = JENKINS_PLATFORM_URLS[platform] || window._jenkinsJobUrl;
+  const url = window._jenkinsJobUrl || JENKINS_PLATFORM_URLS[platform];
   if (url) window.open(url, '_blank');
 }
 
@@ -3469,7 +3475,7 @@ function updateJenkinsBtn() {
   const taskType = window._taskType;
   // 仅 build / tscan / skip_jenkins 任务显示 Jenkins 按钮
   const showForTask = taskType === 'build' || taskType === 'tscan' || taskType === 'skip_jenkins' || !taskType;
-  const url = JENKINS_PLATFORM_URLS[platform] || window._jenkinsJobUrl;
+  const url = window._jenkinsJobUrl || JENKINS_PLATFORM_URLS[platform];
   if (url && showForTask) {
     btn.classList.remove('hidden');
   } else {

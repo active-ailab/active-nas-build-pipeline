@@ -171,4 +171,7 @@ MHS003、MHS003S、NXP595/Apollo4/Apollo5 均支持两种方式，默认分开�
 - **debug&release**：仅触发一个 Jenkins 任务，传入 `BUILD_RELEASE=debug&release`；输入 release 三段版本号，debug 使用相同前缀，第四位由 Jenkins 按 pairRule 分配。产物按四段版本号末位分流：奇数留在 release，偶数移入 debug（含 Monkey），保留子目录结构，再分别执行项目现有的解包、NAS 上传和文档链接生成流程。
 - **分开触发**：分别提交 release、debug 两个任务，沿用各自版本号和产物处理流程。
 
-命令行配置对应 `vars.build_release_mode` 的 `single` / `split`；未配置时沿用分开触发。NXP 系列仍使用 HuamiOS Job，MHS 系列使用 HuamiOS_multi_platform Job。单任务方式要求 Jenkins Job 支持该参数及上述版本号配对规则。
+命令行配置对应 `vars.build_release_mode` 的 `single` / `split`；未配置时沿用分开触发。NXP 系列默认使用 HuamiOS Job，MHS 系列使用 HuamiOS_multi_platform Job。fuji 保留 NXP595/Apollo4/Apollo5 入口，但使用 HuamiOS_multi_platform Job，并传入 `PLATFORM_SELECT=apollo5`；同样支持单任务 `debug&release` 和 release/debug 分开触发。单任务方式要求 Jenkins Job 支持该参数及上述版本号配对规则。
+
+
+项目可在自己的 `gqf_<project>.json` 中配置顶层 `platform_select` 和 `jenkins.triggers.job_url`，例如 fuji 使用 `"platform_select": "apollo5"` 及 HuamiOS_multi_platform 的 Job 地址。代码按配置传递 `PLATFORM_SELECT`，没有项目名称特判。配置支持逗号分隔的字符串或字符串列表，传递时去空格、转小写、去重；未配置时沿用入口默认值。网页发布和独立 TSCAN 优先读取当前项目 JSON 中的显式配置，历史备份与入口默认值不会覆盖它；`job_url_map` 仍可用于逐平台指定 Job。单任务和分开触发均使用同一份平台配置。

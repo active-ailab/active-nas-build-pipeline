@@ -868,6 +868,9 @@ def _get_job_url_for_platform(cfg: Dict[str, Any], key: str) -> str:
     jm = tcfg.get("job_url_map") or {}
     if isinstance(jm, dict) and str(jm.get(key) or "").strip():
         return str(jm.get(key)).strip()
+    # 显式配置芯片选择的项目由自己的 Job URL 决定路由。
+    if cfg.get("platform_select") and str(tcfg.get("job_url") or "").strip():
+        return str(tcfg["job_url"]).strip()
 
     defaults = {
         "MHS003": "https://jenkins.huami.com/job/firmware_auto_trigger/job/HuamiOS_multi_platform/",
@@ -908,12 +911,13 @@ def _with_platform_select(params: Dict[str, Any], cfg: Dict[str, Any], job_url: 
     """统一 release/debug/TSCAN 的合并平台参数，其他 Jenkins job 保持原样。"""
     if "HuamiOS_multi_platform" not in str(job_url):
         return params
-    raw = (cfg.get("_tscan") or {}).get("platform") or cfg.get("platform_select")
-    if not raw:
+    configured = "platform_select" in cfg
+    raw = cfg.get("platform_select") if configured else (cfg.get("_tscan") or {}).get("platform")
+    if not raw and not configured:
         raw = _get_enabled_platforms(cfg)
     values = raw.split(",") if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
     selected = [str(v).strip().lower() for v in values
-                if str(v).strip().lower() in ("mhs003", "mhs003s")]
+                if str(v).strip() and (configured or str(v).strip().lower() in ("mhs003", "mhs003s"))]
     if not selected:
         return params
     return {**params, "PLATFORM_SELECT": ",".join(dict.fromkeys(selected))}
@@ -1671,6 +1675,7 @@ def main() -> int:
                                 try:
                                     tscan_params = _expand_jenkins_params(raw_params=dict(tscan_raw), full_cfg=cfg)
                                     _tscan_adjust_version(tscan_params)
+                                    tscan_params = _with_platform_select(tscan_params, cfg, tscan_job_url)
                                     q = _trigger_build(job_url=tscan_job_url, base_url=_get_jenkins_base_url(cfg),
                                         auth=auth, parameters=tscan_params, crumb=crumb,
                                         timeout_sec=int(args.request_timeout_sec), dry_run=False, opener=opener)

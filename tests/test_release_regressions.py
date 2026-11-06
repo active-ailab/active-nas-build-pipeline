@@ -189,6 +189,23 @@ class CliTests(OfflineTest):
 class PlatformTests(OfflineTest):
     MULTI = "https://offline.invalid/job/HuamiOS_multi_platform/"
 
+    def test_project_json_controls_route_without_project_name_rules(self):
+        for project in ("fuji", "another_project"):
+            for selection in ("apollo5", "custom_chip"):
+                cfg = {"release": {"project": project}, "Platform": {"APOLLO5": "YES"},
+                       "platform_select": selection,
+                       "jenkins": {"triggers": {"job_url": self.MULTI}},
+                       "_tscan": {"platform": "MHS003S"}}
+                self.assertEqual(jenkins._get_job_urls_from_platforms(cfg), {"APOLLO5": self.MULTI})
+                self.assertEqual(jenkins._with_platform_select({}, cfg, self.MULTI),
+                                 {"PLATFORM_SELECT": selection})
+                cfg["jenkins"]["triggers"]["job_url_map"] = {"APOLLO5": "custom_job"}
+                self.assertEqual(jenkins._get_job_url_for_platform(cfg, "APOLLO5"), "custom_job")
+
+    def test_fuji_without_json_selection_has_no_implicit_platform(self):
+        cfg = {"release": {"project": "fuji"}}
+        self.assertEqual(jenkins._with_platform_select({}, cfg, self.MULTI), {})
+
     def test_mhs_platforms_and_legacy_platform_list(self):
         for value, expected in [("mhs003", "mhs003"), ("MHS003S", "mhs003s"),
                                 (["MHS003", "MHS003S"], "mhs003,mhs003s")]:
@@ -201,7 +218,7 @@ class PlatformTests(OfflineTest):
         params = {"BUILD_RELEASE": "release"}
         self.assertEqual(jenkins._with_platform_select(params, {"platform_select": "mhs003"}, "https://offline.invalid/job/HuamiOS/"), params)
 
-    def test_standalone_ui_platform_overrides_saved_platform(self):
+    def test_standalone_saved_platform_overrides_ui_default(self):
         cfg = read_json_with_base(ROOT / "gqf_windermere.json")
         cfg["platform_select"] = "mhs003"
         cfg["_tscan"] = {"platform": "MHS003S", "job_url": self.MULTI}
@@ -209,7 +226,7 @@ class PlatformTests(OfflineTest):
         args = SimpleNamespace(dry_run=True, request_timeout_sec=5)
         self.assertEqual(jenkins._run_tscan_standalone(args, cfg, Path("offline.json"),
                          jenkins.JenkinsAuth("offline", "offline"), None, None), 0)
-        self.assertEqual(trigger.call_args[1]["parameters"]["PLATFORM_SELECT"], "mhs003s")
+        self.assertEqual(trigger.call_args[1]["parameters"]["PLATFORM_SELECT"], "mhs003")
 
     def test_nxp_single_and_split_trigger_counts(self):
         temp = Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir=str(ROOT / "output"))))
@@ -219,9 +236,12 @@ class PlatformTests(OfflineTest):
         self.patch(jenkins, "_poll_queues_for_builds", return_value={})
         self.patch(jenkins, "_poll_build_results", return_value={})
         trigger = self.patch(jenkins, "_trigger_build", return_value="offline-queue")
-        for mode, expected in (("single", ["debug&release"]), ("split", ["release", "debug"])):
-            with self.subTest(mode=mode):
-                cfg = read_json_with_base(ROOT / "gqf_stuttgart.json")
+        for project, mode, expected in (
+                (project, mode, expected)
+                for project in ("stuttgart", "fuji")
+                for mode, expected in (("single", ["debug&release"]), ("split", ["release", "debug"]))):
+            with self.subTest(project=project, mode=mode):
+                cfg = read_json_with_base(ROOT / f"gqf_{project}.json")
                 cfg["vars"].update(build_tscan="no", build_release_mode=mode)
                 cfg["changelog"]["enabled"] = False
                 cfg["jenkins"]["triggers"].update(modes="async", auto_run_pipeline=False)
@@ -234,8 +254,12 @@ class PlatformTests(OfflineTest):
                 self.assertEqual([c[1]["parameters"]["BUILD_RELEASE"]
                                   for c in trigger.call_args_list], expected)
                 for call in trigger.call_args_list:
-                    self.assertTrue(call[1]["job_url"].rstrip("/").endswith("/HuamiOS"))
-                    self.assertNotIn("PLATFORM_SELECT", call[1]["parameters"])
+                    if project == "fuji":
+                        self.assertIn("/HuamiOS_multi_platform/", call[1]["job_url"])
+                        self.assertEqual(call[1]["parameters"]["PLATFORM_SELECT"], "apollo5")
+                    else:
+                        self.assertTrue(call[1]["job_url"].rstrip("/").endswith("/HuamiOS"))
+                        self.assertNotIn("PLATFORM_SELECT", call[1]["parameters"])
 
     def test_full_build_adds_platform_to_release_debug_and_tscan(self):
         temp = Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir=str(ROOT / "output"))))
@@ -343,6 +367,53 @@ class WebSubmissionTests(OfflineTest):
         response = self.client.post("/api/projects/windermere/release", json=payload)
         self.assertEqual(response.status_code, 409)
         self.assertEqual((temp / "gqf_windermere.json").read_bytes(), before)
+
+    def test_fuji_web_submission_keeps_both_build_modes_on_multi_platform(self):
+        temp, threads = self.prepare_submission()
+        legacy = json.loads((ROOT / "gqf_fuji.json").read_text(encoding="utf-8"))
+        for mode in ("single", "split"):
+            with self.subTest(mode=mode):
+                web._running_tasks.clear()
+                selection = "apollo5" if mode == "single" else "custom_chip"
+                legacy["platform_select"] = selection
+                (temp / "gqf_fuji.json").write_text(json.dumps(legacy), encoding="utf-8")
+                backup = temp / "old.json"
+                stale = json.loads(json.dumps(legacy))
+                stale["platform_select"] = "old_chip"
+                stale["jenkins"]["triggers"]["job_url"] = "https://offline.invalid/job/old/"
+                backup.write_text(json.dumps(stale), encoding="utf-8")
+                self.patch(web, "_find_latest_bak", return_value=backup)
+                response = self.client.post("/api/projects/fuji/release", json={
+                    "release": {"version": "1.2.3.1"},
+                    "vars": {"build_release_mode": mode},
+                    "jenkins_job_url": "https://offline.invalid/job/HuamiOS/",
+                    "platform_select": "mhs003",
+                })
+                self.assertEqual(response.status_code, 200)
+                cfg = json.loads((temp / "gqf_fuji.json").read_text(encoding="utf-8"))
+                self.assertEqual(cfg["platform_select"], selection)
+                self.assertIn("/HuamiOS_multi_platform/", cfg["jenkins"]["triggers"]["job_url"])
+                self.assertEqual(cfg["vars"]["build_release_mode"], mode)
+                self.assertEqual(response.get_json()["jenkins_job_url"], cfg["jenkins"]["triggers"]["job_url"])
+
+    def test_tscan_submission_uses_project_json_without_changing_it(self):
+        temp, threads = self.prepare_submission()
+        cfg = json.loads((ROOT / "gqf_fuji.json").read_text(encoding="utf-8"))
+        cfg["platform_select"] = "custom_chip"
+        target = temp / "gqf_fuji.json"
+        target.write_text(json.dumps(cfg), encoding="utf-8")
+        before = target.read_bytes()
+        response = self.client.post("/api/projects/fuji/tscan-only", json={
+            "device": "fuji", "tag_algo": "offline", "platform": "MHS003",
+            "jenkins_job_url": "https://offline.invalid/job/old/",
+        })
+        self.assertEqual(response.status_code, 200)
+        saved = json.loads(next(temp.glob("gqf_fuji_tscan_*.json")).read_text(encoding="utf-8"))
+        self.assertEqual(saved["_tscan"]["platform"], "custom_chip")
+        self.assertEqual(saved["_tscan"]["job_url"], cfg["jenkins"]["triggers"]["job_url"])
+        self.assertEqual(jenkins._with_platform_select({}, saved, saved["_tscan"]["job_url"]),
+                         {"PLATFORM_SELECT": "custom_chip"})
+        self.assertEqual(target.read_bytes(), before)
 
     def test_direct_document_resume_keeps_skip_flags_and_project_config(self):
         temp, threads = self.prepare_submission()

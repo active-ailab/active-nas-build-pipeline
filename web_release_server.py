@@ -2851,6 +2851,34 @@ def api_version_detail(project: str, suffix: str):
     })
 
 
+def _merge_project_build_route(cfg: Dict[str, Any], form_data: Dict[str, Any],
+                               project: str, standalone: bool = False) -> None:
+    """当前项目 JSON 的显式路由优先于历史备份和入口默认值。"""
+    current_path = SCRIPT_DIR / f"gqf_{project}.json"
+    current = json.loads(current_path.read_text(encoding="utf-8")) if current_path.exists() else cfg
+    triggers = cfg.setdefault("jenkins", {}).setdefault("triggers", {})
+    if "platform_select" in current:
+        cfg["platform_select"] = current["platform_select"]
+        saved = (current.get("jenkins") or {}).get("triggers") or {}
+        if "job_url" in saved:
+            triggers["job_url"] = saved["job_url"]
+        if "job_url_map" in saved:
+            triggers["job_url_map"] = saved["job_url_map"]
+        else:
+            triggers.pop("job_url_map", None)
+        if standalone:
+            cfg.setdefault("_tscan", {}).update(
+                platform=cfg["platform_select"], job_url=triggers.get("job_url", ""))
+    elif standalone:
+        cfg.setdefault("_tscan", {}).update(
+            platform=form_data.get("platform", ""), job_url=form_data.get("jenkins_job_url", ""))
+    else:
+        if form_data.get("jenkins_job_url"):
+            triggers["job_url"] = form_data["jenkins_job_url"]
+        if form_data.get("platform_select"):
+            cfg["platform_select"] = form_data["platform_select"]
+
+
 @app.route("/api/projects/<project>/release", methods=["POST"])
 @_protect_project_submission
 def api_release(project: str):
@@ -2958,14 +2986,7 @@ def api_release(project: str):
         base_cfg["jenkins"]["triggers"][_rn].setdefault("parameters", OrderedDict())
         base_cfg["jenkins"]["triggers"][_rn]["parameters"]["HMI_CORE_MM_OWNER_DEP"] = _hmi_val
 
-    # 使用前端选择的 Jenkins Job URL（NXP595→HuamiOS, MHS003/MHS003S→HuamiOS_multi_platform）
-    if form_data.get("jenkins_job_url"):
-        base_cfg.setdefault("jenkins", OrderedDict())
-        base_cfg["jenkins"].setdefault("triggers", OrderedDict())
-        base_cfg["jenkins"]["triggers"]["job_url"] = form_data["jenkins_job_url"]
-    # 保存平台选择（MHS003 / MHS003S 芯片选择）
-    if form_data.get("platform_select"):
-        base_cfg["platform_select"] = form_data["platform_select"]
+    _merge_project_build_route(base_cfg, form_data, project)
 
     # 自动计算 variant 和同步 device_name/xml_name
     rel = base_cfg["release"]
@@ -3022,6 +3043,7 @@ def api_release(project: str):
         "user_id": (form_data.get("user_id") or "").strip(),
         "task_type": "build",
         "platform_select": base_cfg.get("platform_select", ""),
+        "jenkins_job_url": (base_cfg.get("jenkins", {}).get("triggers", {}).get("job_url", "")),
         "status": "starting",
         "started_at": datetime.now().isoformat(),
         "_jenkins_auth": j_auth if j_user and j_pass else {},  # 保存用户凭据，用于终止构建时鉴权
@@ -3152,6 +3174,7 @@ def api_release(project: str):
         "task_id": task_id,
         "project": project,
         "config_file": str(cfg_path),
+        "jenkins_job_url": _running_tasks[task_id].get("jenkins_job_url", ""),
         "message": f"配置已保存到 {cfg_path.name}，流水线已在后台启动",
     })
 
@@ -3360,6 +3383,7 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
         "user_id": (form_data.get("user_id") or "").strip(),
         "task_type": "skip_jenkins",
         "platform_select": base_cfg.get("platform_select", ""),
+        "jenkins_job_url": (base_cfg.get("jenkins", {}).get("triggers", {}).get("job_url", "")),
         "status": "starting",
         "started_at": datetime.now().isoformat(),
         # "source_step": form_data.get("source_step", 5),  # [2026-06-02] 前端不消费
@@ -3565,13 +3589,7 @@ def api_tscan_only(project: str):
 
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
 
-    # 写入平台选择，临时覆盖 Platform 配置，确保使用正确的单平台 Job URL
-    platform = (form_data.get("platform") or "").strip()
-    jenkins_job_url = (form_data.get("jenkins_job_url") or "").strip()
-    if platform:
-        cfg.setdefault("_tscan", {})["platform"] = platform
-    if jenkins_job_url:
-        cfg.setdefault("_tscan", {})["job_url"] = jenkins_job_url
+    _merge_project_build_route(cfg, form_data, device, standalone=True)
     cfg.setdefault("vars", {})
     for key in ("tag_algo", "tag_boot", "tag_recovery", "tag_fct",
                 "project_id", "version", "build_mode", "build_test_tool",
@@ -3603,6 +3621,7 @@ def api_tscan_only(project: str):
         "user_id": (form_data.get("user_id") or "").strip(),
         "task_type": "tscan",
         "platform_select": cfg.get("platform_select", ""),
+        "jenkins_job_url": (cfg.get("jenkins", {}).get("triggers", {}).get("job_url", "")),
         "status": "starting",
         "started_at": datetime.now().isoformat(),
         # "source_step": form_data.get("source_step", 5),  # [2026-06-02] 前端不消费
@@ -3712,6 +3731,7 @@ def api_tscan_only(project: str):
         "ok": True,
         "task_id": task_id,
         "project": project,
+        "jenkins_job_url": _running_tasks[task_id].get("jenkins_job_url", ""),
         "message": f"TSCAN 构建已启动: {task_id}",
     })
 
@@ -4188,6 +4208,7 @@ def api_tasks_list():
             "user_id": task_user,
             "task_type": t.get("task_type", "build"),
             "platform_select": t.get("platform_select", ""),
+            "jenkins_job_url": t.get("jenkins_job_url", ""),
             "status": status,
             "started_at": t["started_at"],
             "total_percent": total_pct,
