@@ -200,6 +200,43 @@ class ArtifactMappingTests(unittest.TestCase):
         result = pipeline._dsl_execute_prepare_flow(cfg=self.cfg, dsl_cfg=dsl, dry_run=False, current_run="release")
         self.assertEqual(result["vars"]["release_top_tgz"].name, FULL)
 
+    def test_geneva_same_ci_link_selects_release_and_debug_by_parity(self):
+        root = Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir=str(ROOT / "output"))))
+        names = [f"archive_geneva_6.5.13.{tail}_202611061410.tgz" for tail in (0, 1)]
+        for filename in names:
+            (root / filename).write_text("offline")
+        for version in ("6.5.13", "6.5.13.1"):
+            cfg = {"release": {"project": "geneva", "version": version},
+                   "vars": {"build_release_mode": "split", "debug_version_name": "old-debug-version"},
+                   "jenkins": {"builds": {
+                       "release": {"build_url": "https://offline.invalid/job/ci/42"},
+                       "debug": {"build_url": "https://offline.invalid/job/ci/42/"}}}}
+            for run, variable, expected in (("release", "release_top_tgz", names[1]),
+                                            ("debug", "debug_full_archive_tgz", names[0])):
+                with self.subTest(version=version, run=run):
+                    dsl = {"prepare": {"flow": {
+                        "work_dir": str(root / "work"), "upload_payload_dir": str(root / "payload"),
+                        "steps": [{"op": "find", "root": str(root),
+                                   "match": {"regex": r"^archive_geneva_.*\.tgz$"},
+                                   "save_as": variable}]}}}
+                    result = pipeline._dsl_execute_prepare_flow(
+                        cfg=cfg, dsl_cfg=dsl, dry_run=False, current_run=run)
+                    self.assertEqual(result["vars"][variable].name, expected)
+
+    def test_combined_three_segment_version_still_rejects_multiple_debug_archives(self):
+        cfg = {"release": {"project": "geneva", "version": "6.5.13"},
+               "vars": {"build_release_mode": "single"}}
+        files = [(f"archive_geneva_6.5.13.{tail}_202611061410.tgz", "link") for tail in (0, 1, 2)]
+        with self.assertRaises(ArtifactSelectionError):
+            select_artifact(files, cfg=cfg, placeholder="{{REL_MONKEY_FULL_ARCHIVE}}", run="debug")
+
+    def test_factory_three_segment_suffix_cannot_bypass_combined_parity(self):
+        cfg = {"release": {"project": "geneva", "version": "6.5.13"},
+               "vars": {"build_release_mode": "single"}}
+        files = [(f"geneva_factory_6.5.13.{tail}_6.5.13_2026-11-06.zip", "link") for tail in (0, 1)]
+        name, _ = select_artifact(files, cfg=cfg, placeholder="{{REL_RELEASE_FACTORY_TOOL_ZIP}}", run="release")
+        self.assertEqual(name, files[1][0])
+
     def test_optional_prepare_step_cannot_hide_ambiguous_package_selection(self):
         root = Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir=str(ROOT / "output"))))
         for filename in [FULL, FULL.replace("202609182037", "202609182038")]: (root / filename).write_text("offline")

@@ -30,7 +30,7 @@ SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 from config_loader import read_json_with_base
-from artifact_matching import PREPARE_ROLES, ArtifactSelectionError, artifact_pattern, select_artifact
+from artifact_matching import PREPARE_ROLES, ArtifactSelectionError, artifact_pattern, select_artifact, is_combined_build
 from changelog_state import (
     load_state as load_changelog_state,
     save_state as save_changelog_state,
@@ -5496,8 +5496,7 @@ def main() -> int:
     # release（版本号末尾奇数）与 debug/monkey（末尾偶数）两套产物。
     # 处理方式：release run 下载全部产物后按版本号奇偶拆成两个下载目录，
     # debug 不再单独下载，后续解压/上传/文档复用现有双 run 链路。
-    build_release_mode = str((cfg.get("vars") or {}).get("build_release_mode") or "").strip().lower()
-    single_task_mode = (build_release_mode == "single")
+    single_task_mode = is_combined_build(cfg)
     if single_task_mode:
         rel_url_single = str((builds.get("release") or {}).get("build_url") or "").strip()
         if rel_url_single:

@@ -237,6 +237,12 @@ class WebResumeTests(OfflineTest):
                           debug_jenkins_url="https://offline.invalid/job/new/122")
         self.assertEqual(cfg["jenkins"]["builds"]["release"]["build_url"], "https://offline.invalid/job/new/123/")
         self.assertEqual(cfg["jenkins"]["builds"]["debug"]["build_url"], "https://offline.invalid/job/new/122/")
+        self.assertEqual(cfg["vars"]["build_release_mode"], "split")
+
+    def test_same_submitted_ci_link_overrides_hidden_split_mode(self):
+        cfg = self.submit(release_jenkins_url=RELEASE_URL.rstrip("/"),
+                          debug_jenkins_url=RELEASE_URL, vars={"build_release_mode": "split"})
+        self.assertEqual(cfg["vars"]["build_release_mode"], "single")
 
 
 if __name__ == "__main__":

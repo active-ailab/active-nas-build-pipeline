@@ -3283,6 +3283,10 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
         base_cfg["jenkins"]["builds"][name] = saved
     release_url = base_cfg["jenkins"]["builds"]["release"]["build_url"]
     debug_url = base_cfg["jenkins"]["builds"]["debug"]["build_url"]
+    # 此入口复用已有构建；实际链接比隐藏表单中的默认模式更可靠。
+    if form_data.get("release_jenkins_url") and form_data.get("debug_jenkins_url"):
+        base_cfg.setdefault("vars", {})["build_release_mode"] = (
+            "single" if release_url == debug_url else "split")
 
     # 清除运行时字段
     base_cfg["jenkins"]["builds"]["debug"].pop("download", None)

@@ -63,15 +63,26 @@ def artifact_pattern(placeholder: str, cfg: Dict[str, Any]) -> Optional[Pattern[
     return re.compile(expression, re.IGNORECASE) if expression else None
 
 
+def is_combined_build(cfg: Dict[str, Any]) -> bool:
+    """同一 CI 构建链接也是合并产物的依据，兼容直接生成文档的入口。"""
+    builds = (cfg.get("jenkins") or {}).get("builds") or {}
+    release_url = str((builds.get("release") or {}).get("build_url") or "").strip().rstrip("/")
+    debug_url = str((builds.get("debug") or {}).get("build_url") or "").strip().rstrip("/")
+    return (str((cfg.get("vars") or {}).get("build_release_mode") or "").strip().lower() == "single"
+            or bool(release_url and release_url == debug_url))
+
+
 def _expected_version(cfg: Dict[str, Any], run: str) -> str:
     release_version = str((cfg.get("release") or {}).get("version") or "").strip()
     variables = cfg.get("vars") or {}
     if run != "debug":
         return release_version or str(variables.get("release_version_name") or "").strip()
-    if str(variables.get("build_release_mode") or "").lower() == "single":
+    if is_combined_build(cfg):
         parts = release_version.split(".")
         if len(parts) == 4 and all(p.isdigit() for p in parts) and int(parts[-1]) % 2:
             return ".".join(parts[:-1] + [str(int(parts[-1]) - 1)])
+        if len(parts) == 3 and all(p.isdigit() for p in parts):
+            return release_version
     return str(variables.get("debug_version_name") or "").strip()
 
 
@@ -85,15 +96,22 @@ def eligible_artifacts(candidates: Iterable[Tuple[str, Any]], *, cfg: Dict[str, 
     independent = placeholder in ("{{REL_BOOTLOADER_MANIFEST_INFO}}", "{{REL_RECOVERY_MANIFEST_INFO}}",
                                   "{{PREPARE_BOOT_ARCHIVE}}", "{{PREPARE_RECOVERY_ARCHIVE}}")
     expected = _expected_version(cfg, run)
-    if pattern and expected and not independent:
+    combined = is_combined_build(cfg)
+    if pattern and (expected or combined) and not independent:
         versioned, unversioned = [], []
         for key, value in pairs:
             name = key.rsplit("/", 1)[-1]
             versions = re.findall(r"(?<![\d.])\d+\.\d+\.\d+(?:\.\d+)?(?!\d|\.\d)", name)
             if not versions:
                 unversioned.append((key, value))
-            elif any(v == expected or (len(expected.split(".")) == 3 and v.startswith(expected + ".")) for v in versions):
-                versioned.append((key, value))
+            else:
+                matching = [v for v in versions if not expected or v == expected
+                            or (len(expected.split(".")) == 3 and v.startswith(expected + "."))]
+                if combined and any(len(v.split(".")) == 4 for v in versions):
+                    matching = [v for v in matching if len(v.split(".")) == 4
+                                and int(v.split(".")[-1]) % 2 == (0 if run == "debug" else 1)]
+                if matching:
+                    versioned.append((key, value))
         pairs = versioned or unversioned
     if placeholder in ("{{REL_MD5SUM_FILE}}", "{{REL_RELEASE_MD5}}") and len(pairs) > 1:
         project = str((cfg.get("release") or {}).get("project") or "").lower()
