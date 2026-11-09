@@ -175,3 +175,5 @@ MHS003、MHS003S、NXP595/Apollo4/Apollo5 均支持两种方式，默认分开�
 
 
 项目可在自己的 `gqf_<project>.json` 中配置顶层 `platform_select` 和 `jenkins.triggers.job_url`，例如 fuji 使用 `"platform_select": "apollo5"` 及 HuamiOS_multi_platform 的 Job 地址。代码按配置传递 `PLATFORM_SELECT`，没有项目名称特判。配置支持逗号分隔的字符串或字符串列表，传递时去空格、转小写、去重；未配置时沿用入口默认值。网页发布和独立 TSCAN 优先读取当前项目 JSON 中的显式配置，历史备份与入口默认值不会覆盖它；`job_url_map` 仍可用于逐平台指定 Job。单任务和分开触发均使用同一份平台配置。
+
+HuamiOS_multi_platform 的构建内容使用独立参数：页面的 `vars.build_mode` 映射为 `RELEASE_BUILD_MODE`，`DEBUG_BUILD_MODE` 默认沿用 debug 配置的 `OTA,BOOT,RECOVERY`。单任务 `debug&release` 和分开触发均传递这两个参数，不再向该 Job 传递旧的 `BUILD_MODE`；原 HuamiOS Job 仍使用 `BUILD_MODE`。项目可在对应触发参数中显式配置 `RELEASE_BUILD_MODE` / `DEBUG_BUILD_MODE` 覆盖默认值。

@@ -215,8 +215,46 @@ class PlatformTests(OfflineTest):
                          {"PLATFORM_SELECT": "mhs003s"})
 
     def test_nxp_parameters_unchanged(self):
-        params = {"BUILD_RELEASE": "release"}
+        params = {"BUILD_RELEASE": "release", "BUILD_MODE": "OTA,FCT"}
         self.assertEqual(jenkins._with_platform_select(params, {"platform_select": "mhs003"}, "https://offline.invalid/job/HuamiOS/"), params)
+
+    def test_multi_platform_build_modes_use_ui_release_selection_and_debug_default(self):
+        cfg = read_json_with_base(ROOT / "gqf_fuji.json")
+        cfg["vars"]["build_mode"] = "OTA,OTA_SLEEP,FCT,BOOT,RECOVERY"
+        for run in ("release", "debug", "Tscan"):
+            with self.subTest(run=run):
+                params = jenkins._expand_jenkins_params(
+                    raw_params=jenkins._get_trigger_params(cfg, run), full_cfg=cfg)
+                result = jenkins._with_platform_select(params, cfg, self.MULTI)
+                self.assertEqual(result["RELEASE_BUILD_MODE"], cfg["vars"]["build_mode"])
+                self.assertEqual(result["DEBUG_BUILD_MODE"], "OTA,BOOT,RECOVERY")
+                self.assertNotIn("BUILD_MODE", result)
+
+    def test_multi_platform_build_modes_preserve_explicit_overrides(self):
+        cfg = {"vars": {"build_mode": "OTA,FCT"}, "jenkins": {"triggers": {
+            "debug": {"parameters": {"DEBUG_BUILD_MODE": "OTA,HWTEST"}}}}}
+        params = {"BUILD_MODE": "OTA", "RELEASE_BUILD_MODE": "BOOT,FCT"}
+        result = jenkins._with_platform_select(params, cfg, self.MULTI)
+        self.assertEqual(result["RELEASE_BUILD_MODE"], "BOOT,FCT")
+        self.assertEqual(result["DEBUG_BUILD_MODE"], "OTA,HWTEST")
+        self.assertEqual(params["BUILD_MODE"], "OTA")
+
+    def test_combined_multi_platform_http_request_keeps_fct_in_release_mode(self):
+        cfg = read_json_with_base(ROOT / "gqf_fuji.json")
+        cfg["vars"]["build_mode"] = "OTA,OTA_SLEEP,FCT,BOOT,RECOVERY"
+        params = jenkins._with_platform_select(jenkins._expand_jenkins_params(
+            raw_params=jenkins._get_trigger_params(cfg, "release"), full_cfg=cfg), cfg, self.MULTI)
+        params["BUILD_RELEASE"] = "debug&release"
+        self.patch(jenkins, "_request_json", return_value={"property": []})
+        post = self.patch(jenkins, "_request", return_value=(201, {"Location": "/queue/item/1/"}, b""))
+        jenkins._trigger_build(job_url=self.MULTI, base_url="https://offline.invalid/",
+            auth=jenkins.JenkinsAuth("offline", "offline"), parameters=params,
+            crumb=None, timeout_sec=5, dry_run=False, opener=None)
+        body = jenkins.urllib.parse.parse_qs(post.call_args[1]["body"].decode("utf-8"))
+        self.assertEqual(body["BUILD_RELEASE"], ["debug&release"])
+        self.assertEqual(body["RELEASE_BUILD_MODE"], [cfg["vars"]["build_mode"]])
+        self.assertEqual(body["DEBUG_BUILD_MODE"], ["OTA,BOOT,RECOVERY"])
+        self.assertNotIn("BUILD_MODE", body)
 
     def test_standalone_saved_platform_overrides_ui_default(self):
         cfg = read_json_with_base(ROOT / "gqf_windermere.json")
@@ -257,6 +295,9 @@ class PlatformTests(OfflineTest):
                     if project == "fuji":
                         self.assertIn("/HuamiOS_multi_platform/", call[1]["job_url"])
                         self.assertEqual(call[1]["parameters"]["PLATFORM_SELECT"], "apollo5")
+                        self.assertEqual(call[1]["parameters"]["RELEASE_BUILD_MODE"], cfg["vars"]["build_mode"])
+                        self.assertEqual(call[1]["parameters"]["DEBUG_BUILD_MODE"], "OTA,BOOT,RECOVERY")
+                        self.assertNotIn("BUILD_MODE", call[1]["parameters"])
                     else:
                         self.assertTrue(call[1]["job_url"].rstrip("/").endswith("/HuamiOS"))
                         self.assertNotIn("PLATFORM_SELECT", call[1]["parameters"])

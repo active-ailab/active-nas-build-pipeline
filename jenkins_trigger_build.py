@@ -907,10 +907,28 @@ def _get_job_urls_from_platforms(cfg: Dict[str, Any]) -> Dict[str, str]:
     return jobs
 
 
+def _with_build_modes(params: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """multi-platform Job 使用独立的 release/debug 构建内容参数。"""
+    if "BUILD_MODE" not in params:
+        return params
+    release_params = _expand_jenkins_params(raw_params=_get_trigger_params(cfg, "release"), full_cfg=cfg)
+    debug_params = _expand_jenkins_params(raw_params=_get_trigger_params(cfg, "debug"), full_cfg=cfg)
+    release_mode = (params.get("RELEASE_BUILD_MODE") or release_params.get("RELEASE_BUILD_MODE")
+                    or (cfg.get("vars") or {}).get("build_mode") or release_params.get("BUILD_MODE")
+                    or params.get("BUILD_MODE") or "OTA,BOOT,RECOVERY")
+    debug_mode = (params.get("DEBUG_BUILD_MODE") or debug_params.get("DEBUG_BUILD_MODE")
+                  or debug_params.get("BUILD_MODE") or "OTA,BOOT,RECOVERY")
+    result = dict(params)
+    result.pop("BUILD_MODE", None)
+    result.update(RELEASE_BUILD_MODE=release_mode, DEBUG_BUILD_MODE=debug_mode)
+    return result
+
+
 def _with_platform_select(params: Dict[str, Any], cfg: Dict[str, Any], job_url: str) -> Dict[str, Any]:
     """统一 release/debug/TSCAN 的合并平台参数，其他 Jenkins job 保持原样。"""
     if "HuamiOS_multi_platform" not in str(job_url):
         return params
+    params = _with_build_modes(params, cfg)
     configured = "platform_select" in cfg
     raw = cfg.get("platform_select") if configured else (cfg.get("_tscan") or {}).get("platform")
     if not raw and not configured:
