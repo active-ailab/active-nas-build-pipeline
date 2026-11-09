@@ -179,3 +179,7 @@ MHS003、MHS003S、NXP595/Apollo4/Apollo5 均支持两种方式，默认分开�
 HuamiOS_multi_platform 的构建内容使用独立参数：页面的 `vars.build_mode` 映射为 `RELEASE_BUILD_MODE`，`DEBUG_BUILD_MODE` 默认沿用 debug 配置的 `OTA,BOOT,RECOVERY`。单任务 `debug&release` 和分开触发均传递这两个参数，不再向该 Job 传递旧的 `BUILD_MODE`；原 HuamiOS Job 仍使用 `BUILD_MODE`。项目可在对应触发参数中显式配置 `RELEASE_BUILD_MODE` / `DEBUG_BUILD_MODE` 覆盖默认值。
 
 所有项目支持可选日志字典产物 `log_dict_bz2_<项目>_<四段版本号>_OTA.bin`。沿用现有产物下载和 NAS 上传流程；合并构建按第四位奇偶分流：奇数为 Release，偶数为 Debug（NAS 目录沿用 Monkey）。文档模板可增加 `{{REL_RELEASE_LOG_DIST_BZ2_BIN}}` 和 `{{REL_MONKEY_LOG_DIST_BZ2_BIN}}`，替换结果为带分享链接的文件名。单任务、分开打包和使用已有 NAS 清单续生成文档均支持；缺少该产物时不影响旧项目发布。匹配会校验项目、版本及奇偶，同一字段存在多个候选时会明确报错。
+
+HuamiOS_multi_platform 的 TSCAN 会从本次父构建日志中的 `HuamiOS_multi_platform_quality_check #编号` 定位下游构建，以下游状态作为完成结果，并保存下游链接；不会查询共享 Job 的 lastBuild。产物从该下游的 `quality_results/<平台>/` 清单下载，保留如 `mhs003_OTA_tscanResult.zip` 的文件名，上传到 Monkey。`{{REL_TSCAN_BOOT}}`、`{{REL_TSCAN_OTA}}`、`{{REL_TSCAN_RECOVERY}}` 同时兼容带平台前缀和旧文件名。独立 TSCAN 和直接使用已有 CI 链接生成文档也使用这套解析逻辑；缺少下游编号、下游失败或下载失败时明确报错。
+
+随主发布运行的 TSCAN 和 changelog 为可选子任务：触发失败、排队或构建超时、任务失败、报告下载失败或差分报告无结果时，记录异常及子任务失败状态，主固件下载、NAS 上传和文档生成继续。失败子任务的旧报告和链接不会被重新用于文档。独立 TSCAN / 独立 changelog 失败或无结果时，仅结束自己的任务并返回失败；Release/Debug 固件构建失败仍会中断主发布。

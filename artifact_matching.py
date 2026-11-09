@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, Iterable, List, Optional, Pattern, Tuple
+from tscan_support import tscan_pattern
 
 
 class ArtifactSelectionError(RuntimeError):
@@ -27,6 +28,9 @@ PREPARE_ROLES = {
 
 
 def artifact_pattern(placeholder: str, cfg: Dict[str, Any]) -> Optional[Pattern[str]]:
+    for kind in ("BOOT", "OTA", "RECOVERY"):
+        if placeholder.strip("{}") == "REL_TSCAN_" + kind:
+            return tscan_pattern(kind, cfg)
     release = cfg.get("release") or {}
     project = str(release.get("project") or release.get("device_name") or "").strip()
     p = re.escape(project) if project else r"(?!)"
@@ -94,6 +98,9 @@ def eligible_artifacts(candidates: Iterable[Tuple[str, Any]], *, cfg: Dict[str, 
     pairs = [(str(k).replace("\\", "/"), value) for k, value in candidates if value]
     if pattern:
         pairs = [(k, v) for k, v in pairs if pattern.fullmatch(k.rsplit("/", 1)[-1])]
+    if placeholder.startswith("{{REL_TSCAN_"):
+        prefixed = [(k, v) for k, v in pairs if not k.rsplit("/", 1)[-1].upper().startswith(("BOOT_", "OTA_", "RECOVERY_"))]
+        pairs = prefixed or pairs
     # BOOT and RECOVERY have their own versions, independent of app firmware.
     independent = placeholder in ("{{REL_BOOTLOADER_MANIFEST_INFO}}", "{{REL_RECOVERY_MANIFEST_INFO}}",
                                   "{{PREPARE_BOOT_ARCHIVE}}", "{{PREPARE_RECOVERY_ARCHIVE}}")

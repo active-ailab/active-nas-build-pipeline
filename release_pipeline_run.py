@@ -30,6 +30,7 @@ SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 from config_loader import read_json_with_base
+from subtask_status import record_subtask_error, failed_optional_placeholder
 from artifact_matching import PREPARE_ROLES, ArtifactSelectionError, artifact_pattern, select_artifact, is_combined_build
 from changelog_state import (
     load_state as load_changelog_state,
@@ -3237,6 +3238,8 @@ def _build_placeholder_replacements_from_dsl(
 
     for ph, rule in mappings.items():
         phs = str(ph)
+        if failed_optional_placeholder(cfg, phs):
+            continue
         if not phs.strip():
             continue
         if not isinstance(rule, dict):
@@ -3349,6 +3352,9 @@ def _build_placeholder_replacements_from_dsl(
     for ph, rule in mappings.items():
         if not isinstance(rule, dict) or str(rule.get("mode") or "").strip().lower() != "filename_for_share":
             continue
+        if failed_optional_placeholder(cfg, str(ph)):
+            out[str(ph)] = ""
+            continue
         share_ph = str(rule.get("share_placeholder") or "").strip()
         filename = _filename_for_share.get(share_ph, "")
         out[str(ph)] = filename
@@ -3378,7 +3384,7 @@ def _build_placeholder_replacements_from_dsl(
                     continue
                 out[ks] = vs
 
-    return {k: ("" if v is None else str(v)) for k, v in out.items() if str(k).strip()}
+    return {k: ("" if v is None or failed_optional_placeholder(cfg, k) else str(v)) for k, v in out.items() if str(k).strip()}
 
 
 def _update_changelog_state(*, project: str, version: str, **updates: Any) -> Dict[str, Any]:
@@ -3564,6 +3570,19 @@ def _trigger_changelog_job_and_get_feishu_link(*, job_url: str, params: Dict[str
 
 
 def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
+    if (cfg.get("subtask_errors") or {}).get("changelog"):
+        return ""
+    try:
+        link = _build_changelog_link_impl(cfg=cfg)
+        if not link and (cfg.get("changelog") or {}).get("enabled"):
+            record_subtask_error(cfg, "changelog", RuntimeError("差分任务失败、超时或未生成报告链接"))
+        return link
+    except Exception as exc:
+        record_subtask_error(cfg, "changelog", exc)
+        return ""
+
+
+def _build_changelog_link_impl(*, cfg: Dict[str, Any]) -> str:
     """Build Changelog link by triggering Jenkins job and extracting Feishu link.
     
     Automatically triggers CMP-JIRA-GIT job, waits for completion (~5 mins),
@@ -3631,6 +3650,12 @@ def _build_changelog_link(*, cfg: Dict[str, Any]) -> str:
                 with op.open(_req2, timeout=30) as _resp2:
                     _data = json.loads(_resp2.read().decode(errors="replace"))
                 if not bool(_data.get("building", False)):
+                    # Re-read the completed console once: a report may have appeared after the previous read.
+                    with op.open(_Req(console_url, headers={"Authorization": f"Basic {auth_str}"}), timeout=30) as final:
+                        final_text = final.read().decode(errors="replace")
+                    final_link = _re.search(r'差分报告飞书链接\s*[:：]\s*(https://zepp\.feishu\.cn/[^\s\n\r]+)', final_text, _re.IGNORECASE)
+                    if final_link:
+                        return final_link.group(1).strip().rstrip('.,;:'), False
                     return "", False
             except Exception:
                 pass
@@ -4209,6 +4234,8 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
     recovery_manifest_share_pat = artifact_pattern("{{REL_RECOVERY_MANIFEST_INFO}}", cfg)
 
     def _set_share(ph: str, run_sum: Dict[str, Any], pat: Pattern, what: str) -> None:
+        if failed_optional_placeholder(cfg, ph):
+            return
         if not run_sum:
             return
         try:
@@ -4246,15 +4273,12 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
         _set_share(ph, summary, artifact_pattern(ph, cfg), ph)
 
     # ── TSCAN share links ──
-    tscan_links = tscan_sum.get("share_links_main", {}) if isinstance(tscan_sum.get("share_links_main"), dict) else {}
     for placeholder_key, tscan_filename in [
         ("{{REL_TSCAN_BOOT}}", "BOOT_tscanResult.zip"),
         ("{{REL_TSCAN_OTA}}", "OTA_tscanResult.zip"),
         ("{{REL_TSCAN_RECOVERY}}", "RECOVERY_tscanResult.zip"),
     ]:
-        url = tscan_links.get(tscan_filename, "")
-        if url:
-            repl[placeholder_key] = f"{tscan_filename}|{url}"
+        _set_share(placeholder_key, tscan_sum, artifact_pattern(placeholder_key, cfg), placeholder_key)
 
     if not repl.get("{{REL_BOOTLOADER_MANIFEST_INFO}}"):
         fname, url = _try_dsm_share_link_from_local_file(
@@ -4431,7 +4455,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
                     continue
                 repl[ks] = vs
 
-    return {k: ("" if v is None else str(v)) for k, v in repl.items() if str(k).strip()}
+    return {k: ("" if v is None or failed_optional_placeholder(cfg, k) else str(v)) for k, v in repl.items() if str(k).strip()}
 
 
 class SynologyDsmClient:
@@ -5270,6 +5294,9 @@ def main() -> int:
         else:
             if "{{REL_CHANGELOG_LINK}}" in keys:
                 link = _build_changelog_link(cfg=cfg)
+                if not link and keys == ["{{REL_CHANGELOG_LINK}}"]:
+                    print("ERROR: 独立差分更新未获取到报告链接", file=sys.stderr)
+                    return 1
                 mapping_all["{{REL_CHANGELOG_LINK}}"] = link or ""
 
         mapping_final: Dict[str, str] = {}
@@ -6077,109 +6104,126 @@ def main() -> int:
             print(f"Switching to release variant...")
             run_one("release")
     # ── TSCAN 产物上传和分享链接（独立于 release/debug builds）──
-    if args.skip_upload and args.only in ("all", "release"):
-        # TSCAN 同样尊重跳过上传：优先复用已列出的 Monkey 清单，完全
-        # 不检查本地 TSCAN 目录，避免有旧文件时意外重新上传。
-        tscan_up = uploads_by_name.get("tscan") or {}
-        tscan_subdir = str(tscan_up.get("remote_subdir") or "Monkey").strip("/")
-        tscan_remote_dir = f"{remote_variant_base.rstrip('/')}/{tscan_subdir}"
-        tscan_links = None
-        for summary in run_summaries:
-            if summary.get("remote_dir") == tscan_remote_dir:
-                tscan_links = dict(summary.get("share_links_main") or {})
-                break
-        if tscan_links is None:
-            tscan_links = {}
-            if not (args.dry_run or args.skip_share) and dsm_base_url and dsm_user and dsm_pass:
-                try:
-                    tscan_links = _generate_share_links_from_remote(
-                        dsm_base_url=dsm_base_url, dsm_verify_tls=dsm_verify_tls,
-                        timeout_sec=nas_timeout_sec, username=dsm_user, password=dsm_pass,
-                        remote_dir=tscan_remote_dir,
-                    )
-                except Exception as e:
-                    print(f"WARN: TSCAN remote share-link listing failed: {e}", file=sys.stderr)
-        run_summaries.append({"name": "tscan", "remote_dir": tscan_remote_dir,
-                              "share_links_source": "nas", "share_links_main": tscan_links})
-    elif args.only in ("all", "release"):
-        # 确定 TSCAN 产物目录
-        tscan_local_dir_val = _resolve_cfg_path(Path(
-            uploads_by_name["tscan"]["local_dir"] if "tscan" in uploads_by_name
-            else f"work/download/{release_cfg.get('project', 'unknown')}_tscan"
-        ))
-        tscan_up = uploads_by_name.get("tscan")
-        # 如果本地无 TSCAN 文件但 Jenkins build_url 存在，则先下载
-        if (not tscan_local_dir_val.exists() or not any(tscan_local_dir_val.iterdir())):
-            tscan_build_url = str(builds.get("tscan", {}).get("build_url", "")).strip()
-            if tscan_build_url and not args.skip_download:
-                print(f"\n=== TSCAN DOWNLOAD (before upload) ===")
-                print(f"Download from: {tscan_build_url}")
-                print(f"Download to:   {tscan_local_dir_val}")
-                if not args.dry_run:
-                    tscan_local_dir_val.mkdir(parents=True, exist_ok=True)
-                    tscan_dl_cfg = builds.get("tscan", {}).get("download", {})
-                    tscan_include = [str(x) for x in (tscan_dl_cfg.get("include_globs") or ["**/*"])]
-                    tscan_exclude = [str(x) for x in (tscan_dl_cfg.get("exclude_globs") or [])]
-                    jenkins_download_artifacts(
-                        build_url=tscan_build_url,
-                        out_dir=tscan_local_dir_val,
-                        auth=JenkinsAuth(username=j_user, password=j_pass),
-                        include_globs=tscan_include,
-                        exclude_globs=tscan_exclude,
-                        overwrite=True,
-                        verify_tls=True,
-                        timeout_sec=jenkins_timeout_sec,
-                        dry_run=args.dry_run,
-                        show_progress=show_progress,
-                    )
-                    print(f"TSCAN download complete: {len(list(tscan_local_dir_val.iterdir()))} files")
-        tscan_local_dir = tscan_local_dir_val  # 统一变量名
-        if tscan_local_dir.exists() and any(tscan_local_dir.iterdir()):
-            tscan_remote_subdir = str(tscan_up["remote_subdir"]) if tscan_up and tscan_up.get("remote_subdir") else "Monkey"
-            tscan_overwrite = bool(tscan_up.get("overwrite", False)) if tscan_up else True
-            print(f"\n=== TSCAN UPLOAD ===")
-            print(f"Upload -> NAS:{tscan_remote_subdir} ({tscan_local_dir})")
-            if not args.dry_run:
-                _run_uploader(
-                    uploader_script=uploader_script,
-                    nas_base_url=nas_base_url,
-                    nas_username=nas_user,
-                    nas_password=nas_pass,
-                    verify_tls=nas_verify_tls,
-                    timeout_sec=nas_timeout_sec,
-                    remote_base_dir=remote_variant_base,
-                    folder_name=tscan_remote_subdir,
-                    local_dir=str(tscan_local_dir),
-                    skip_existing=not tscan_overwrite,
-                    dry_run=args.dry_run,
-                    show_progress=show_progress,
-                transport_method=nas_transport, smb_share=nas_smb_share,
-                )
-            # 为 TSCAN 产物生成 NAS 分享链接
-            tscan_share_links: Dict[str, str] = {}
-            if not (args.dry_run or args.skip_share) and dsm_base_url and dsm_user:
-                try:
-                    links = _generate_and_print_share_links(
-                        dsm_base_url=dsm_base_url,
-                        dsm_verify_tls=dsm_verify_tls,
-                        timeout_sec=nas_timeout_sec,
-                        username=dsm_user,
-                        password=dsm_pass,
-                        remote_dir=f"{remote_variant_base.rstrip('/')}/{tscan_remote_subdir.strip('/')}",
-                        local_dir=tscan_local_dir,
-                    )
-                    tscan_share_links = links or {}
-                except Exception as e:
-                    print(f"WARN: TSCAN share link generation failed: {e}", file=sys.stderr)
-            # 记录到 run_summaries 供占位符替换使用
-            run_summaries.append({
-                "name": "tscan",
-                "local_dir": str(tscan_local_dir),
-                "remote_dir": f"{remote_variant_base}/{tscan_remote_subdir}",
-                "share_links_main": tscan_share_links,
-            })
-        else:
-            print(f"\n=== TSCAN SKIPPED: no files in {tscan_local_dir} ===")
+    if not (cfg.get("subtask_errors") or {}).get("tscan"):
+        try:
+            if args.skip_upload and args.only in ("all", "release"):
+                # TSCAN 同样尊重跳过上传：优先复用已列出的 Monkey 清单，完全
+                # 不检查本地 TSCAN 目录，避免有旧文件时意外重新上传。
+                tscan_up = uploads_by_name.get("tscan") or {}
+                tscan_subdir = str(tscan_up.get("remote_subdir") or "Monkey").strip("/")
+                tscan_remote_dir = f"{remote_variant_base.rstrip('/')}/{tscan_subdir}"
+                tscan_links = None
+                for summary in run_summaries:
+                    if summary.get("remote_dir") == tscan_remote_dir:
+                        tscan_links = dict(summary.get("share_links_main") or {})
+                        break
+                if tscan_links is None:
+                    tscan_links = {}
+                    if not (args.dry_run or args.skip_share) and dsm_base_url and dsm_user and dsm_pass:
+                        try:
+                            tscan_links = _generate_share_links_from_remote(
+                                dsm_base_url=dsm_base_url, dsm_verify_tls=dsm_verify_tls,
+                                timeout_sec=nas_timeout_sec, username=dsm_user, password=dsm_pass,
+                                remote_dir=tscan_remote_dir,
+                            )
+                        except Exception as e:
+                            print(f"WARN: TSCAN remote share-link listing failed: {e}", file=sys.stderr)
+                run_summaries.append({"name": "tscan", "remote_dir": tscan_remote_dir,
+                                      "share_links_source": "nas", "share_links_main": tscan_links})
+            elif args.only in ("all", "release"):
+                # 确定 TSCAN 产物目录
+                tscan_local_dir_val = _resolve_cfg_path(Path(
+                    uploads_by_name["tscan"]["local_dir"] if "tscan" in uploads_by_name
+                    else f"work/download/{(cfg.get('release') or {}).get('project', 'unknown')}_tscan"
+                ))
+                tscan_up = uploads_by_name.get("tscan")
+                # 如果本地无 TSCAN 文件但 Jenkins build_url 存在，则先下载
+                tscan_build_url = str(builds.get("tscan", {}).get("build_url", "")).strip()
+                multi_tscan = "/job/HuamiOS_multi_platform" in tscan_build_url
+                fresh_tscan = str(builds.get("tscan", {}).get("downloaded_build_url", "")).rstrip("/") != tscan_build_url.rstrip("/")
+                if (not tscan_local_dir_val.exists() or not any(tscan_local_dir_val.iterdir()) or (multi_tscan and fresh_tscan)):
+                    if tscan_build_url and not args.skip_download:
+                        print(f"\n=== TSCAN DOWNLOAD (before upload) ===")
+                        print(f"Download from: {tscan_build_url}")
+                        print(f"Download to:   {tscan_local_dir_val}")
+                        if not args.dry_run:
+                            tscan_local_dir_val.mkdir(parents=True, exist_ok=True)
+                            tscan_dl_cfg = builds.get("tscan", {}).get("download", {})
+                            tscan_include = [str(x) for x in (tscan_dl_cfg.get("include_globs") or ["**/*"])]
+                            tscan_exclude = [str(x) for x in (tscan_dl_cfg.get("exclude_globs") or [])]
+                            if multi_tscan:
+                                from jenkins_trigger_build import _download_tscan_artifacts, JenkinsAuth as TriggerAuth
+                                _download_tscan_artifacts(build_url=tscan_build_url, out_dir=tscan_local_dir_val,
+                                    auth=TriggerAuth(j_user, j_pass), base_url=tscan_build_url.split("/job/")[0],
+                                    verify_tls=True, request_timeout_sec=jenkins_timeout_sec, opener=None,
+                                    project=str((cfg.get("release") or {}).get("project") or ""), cfg=cfg)
+                            else:
+                                jenkins_download_artifacts(
+                                    build_url=tscan_build_url,
+                                    out_dir=tscan_local_dir_val,
+                                    auth=JenkinsAuth(username=j_user, password=j_pass),
+                                    include_globs=tscan_include,
+                                    exclude_globs=tscan_exclude,
+                                    overwrite=True,
+                                    verify_tls=True,
+                                    timeout_sec=jenkins_timeout_sec,
+                                    dry_run=args.dry_run,
+                                    show_progress=show_progress,
+                                )
+                            print(f"TSCAN download complete: {len(list(tscan_local_dir_val.iterdir()))} files")
+                tscan_local_dir = tscan_local_dir_val  # 统一变量名
+                if tscan_local_dir.exists() and any(tscan_local_dir.iterdir()):
+                    tscan_remote_subdir = str(tscan_up["remote_subdir"]) if tscan_up and tscan_up.get("remote_subdir") else "Monkey"
+                    tscan_overwrite = bool(tscan_up.get("overwrite", False)) if tscan_up else True
+                    print(f"\n=== TSCAN UPLOAD ===")
+                    print(f"Upload -> NAS:{tscan_remote_subdir} ({tscan_local_dir})")
+                    if not args.dry_run:
+                        _run_uploader(
+                            uploader_script=uploader_script,
+                            nas_base_url=nas_base_url,
+                            nas_username=nas_user,
+                            nas_password=nas_pass,
+                            verify_tls=nas_verify_tls,
+                            timeout_sec=nas_timeout_sec,
+                            remote_base_dir=remote_variant_base,
+                            folder_name=tscan_remote_subdir,
+                            local_dir=str(tscan_local_dir),
+                            skip_existing=not tscan_overwrite,
+                            dry_run=args.dry_run,
+                            show_progress=show_progress,
+                        transport_method=nas_transport, smb_share=nas_smb_share,
+                        )
+                    # 为 TSCAN 产物生成 NAS 分享链接
+                    tscan_share_links: Dict[str, str] = {}
+                    if not (args.dry_run or args.skip_share) and dsm_base_url and dsm_user:
+                        try:
+                            links = _generate_and_print_share_links(
+                                dsm_base_url=dsm_base_url,
+                                dsm_verify_tls=dsm_verify_tls,
+                                timeout_sec=nas_timeout_sec,
+                                username=dsm_user,
+                                password=dsm_pass,
+                                remote_dir=f"{remote_variant_base.rstrip('/')}/{tscan_remote_subdir.strip('/')}",
+                                local_dir=tscan_local_dir,
+                            )
+                            tscan_share_links = links or {}
+                        except Exception as e:
+                            print(f"WARN: TSCAN share link generation failed: {e}", file=sys.stderr)
+                    # 记录到 run_summaries 供占位符替换使用
+                    run_summaries.append({
+                        "name": "tscan",
+                        "local_dir": str(tscan_local_dir),
+                        "remote_dir": f"{remote_variant_base}/{tscan_remote_subdir}",
+                        "share_links_main": tscan_share_links,
+                    })
+                else:
+                    print(f"\n=== TSCAN SKIPPED: no files in {tscan_local_dir} ===")
+
+        except Exception as exc:
+            record_subtask_error(cfg, "tscan", exc)
+            run_summaries[:] = [run for run in run_summaries if run.get("name") != "tscan"]
+    else:
+        print("[TSCAN:SKIP] 子任务失败，跳过报告下载和上传，继续生成发布文档")
 
     # Generate local Feishu-style version doc (Markdown)
     md: Optional[str] = None
@@ -6281,7 +6325,7 @@ def main() -> int:
             if dsl_cfg is not None:
                 completed_runs = {r["name"] for r in run_summaries}
                 for key, rule in ((dsl_cfg.get("placeholders") or {}).get("mappings") or {}).items():
-                    if not isinstance(rule, dict) or not rule.get("required"):
+                    if not isinstance(rule, dict) or not rule.get("required") or failed_optional_placeholder(cfg, key):
                         continue
                     if rule.get("mode") == "nas_share":
                         if args.skip_share or str(rule.get("run") or "release") not in completed_runs:

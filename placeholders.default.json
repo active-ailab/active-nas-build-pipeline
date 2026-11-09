@@ -508,19 +508,19 @@
       "{{REL_TSCAN_BOOT}}": {
         "mode": "nas_share",
         "run": "tscan",
-        "match": { "exact": "BOOT_tscanResult.zip" },
+        "match": { "regex": "^(?:[A-Za-z0-9_-]+_)?BOOT_tscanResult\\.zip$" },
         "required": false
       },
       "{{REL_TSCAN_OTA}}": {
         "mode": "nas_share",
         "run": "tscan",
-        "match": { "exact": "OTA_tscanResult.zip" },
+        "match": { "regex": "^(?:[A-Za-z0-9_-]+_)?OTA_tscanResult\\.zip$" },
         "required": false
       },
       "{{REL_TSCAN_RECOVERY}}": {
         "mode": "nas_share",
         "run": "tscan",
-        "match": { "exact": "RECOVERY_tscanResult.zip" },
+        "match": { "regex": "^(?:[A-Za-z0-9_-]+_)?RECOVERY_tscanResult\\.zip$" },
         "required": false
       }
     }

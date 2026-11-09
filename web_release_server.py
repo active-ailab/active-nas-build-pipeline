@@ -798,7 +798,10 @@ def _process_pipeline_line(task_id: str, line: str):
     # ═══════════════════════════════════════════
     if '[TSCAN' in clean:
         # 检测到 TSCAN 触发，启用 TSCAN 状态追踪
-        if 'Trigger TSCAN' in clean or 'build_tscan=yes' in clean:
+        if '[TSCAN:ERROR]' in clean:
+            ts.update(enabled=True, status="failed", message=clean)
+            _push_tscan_progress(task_id, ts)
+        elif 'Trigger TSCAN' in clean or 'build_tscan=yes' in clean:
             ts["enabled"] = True
             ts["status"] = "building"
             ts["message"] = "TSCAN Jenkins 构建中..."
@@ -3239,6 +3242,10 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
         try:
             existing = read_json_with_base(existing_path)
             base_cfg["vars"].update(existing.get("vars") or {})
+            if isinstance(existing.get("subtask_errors"), dict):
+                base_cfg["subtask_errors"] = dict(existing["subtask_errors"])
+            if "platform_select" in existing:
+                base_cfg["platform_select"] = existing["platform_select"]
             if "nas" in existing and existing["nas"].get("remote", {}).get("base_dir"):
                 base_cfg["nas"]["remote"]["base_dir"] = existing["nas"]["remote"]["base_dir"]
             if "feishu" in existing and existing["feishu"].get("template_node_token"):
@@ -3293,6 +3300,7 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     base_cfg["jenkins"]["builds"]["release"].pop("download", None)
     # 可选的 TSCAN build URL
     if tscan_url:
+        base_cfg.get("subtask_errors", {}).pop("tscan", None)
         tscan_dl_cfg = {
             "mode": "artifacts",
             "include_globs": ["**/*"],
@@ -3674,7 +3682,8 @@ def api_tscan_only(project: str):
                 if stripped and '/job/' in stripped and ('TSCAN' in stripped.upper() or 'tscan' in stripped.lower()):
                     # Try to extract build URL
                     url_match = re.search(r'(https?://\S+)', stripped)
-                    if url_match and not _running_tasks[task_id].get("tscan_build_url"):
+                    if url_match and ("/job/HuamiOS_multi_platform_quality_check/" in url_match.group(1)
+                                      or not _running_tasks[task_id].get("tscan_build_url")):
                         _running_tasks[task_id]["tscan_build_url"] = url_match.group(1).rstrip('/')
 
             proc.stdout.close()
@@ -4531,7 +4540,20 @@ def api_start_changelog(project: str):
                         if bd.get("result") and not bd.get("building"):
                             _push_log(task_id, f"Build result: {bd['result']}")
                             finished = True
-                            is_success = bd["result"] == "SUCCESS"
+                            if bd["result"] == "SUCCESS" and not feishu_link:
+                                # The last report line can appear between the console and status requests.
+                                try:
+                                    final_console = session.get(build_url.rstrip("/") + "/consoleText", timeout=10, verify=False)
+                                    if final_console.status_code == 200:
+                                        match = re.search(r'差分报告飞书链接[：:\s]*(https?://\S+)', final_console.text)
+                                        if match:
+                                            feishu_link = match.group(1).rstrip('>,;')
+                                            _running_tasks[task_id]["feishu_link"] = feishu_link
+                                except Exception as exc:
+                                    _push_log(task_id, f"WARN: 获取最终差分报告日志失败: {exc}")
+                            is_success = bd["result"] == "SUCCESS" and bool(feishu_link)
+                            if bd["result"] == "SUCCESS" and not feishu_link:
+                                _push_log(task_id, "❌ 独立差分任务未生成报告链接，任务按失败结束")
                             _running_tasks[task_id]["status"] = "success" if is_success else "failed"
                             if is_success:
                                 steps[3]["status"] = "success"; steps[3]["percent"] = 100

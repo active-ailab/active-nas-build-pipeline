@@ -48,6 +48,7 @@ import urllib.request
 import http.cookiejar
 import re
 import threading
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +59,8 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 from config_loader import read_json_with_base
 from changelog_state import RUNTIME_KEYS, save_state as save_changelog_state
+from tscan_support import QUALITY_JOB, is_multi_tscan_parent, quality_build_from_console, tscan_pattern
+from subtask_status import record_subtask_error
 
 try:  # 多维表格「环节流水」通知，缺失时不阻断流水线
     from feishu_base_notifier import notify_stage as _base_notify_stage
@@ -680,7 +683,7 @@ def _poll_build_result(
 
 def _poll_build_results(
     *,
-    builds: Mapping[str, Tuple[int, str]],
+    builds: Dict[str, Tuple[int, str]],
     auth: JenkinsAuth,
     poll_interval_sec: int,
     build_timeout_sec: int,
@@ -722,6 +725,21 @@ def _poll_build_results(
             url = build_url.rstrip("/") + "/api/json"
             try:
                 resp = _request_json(method="GET", url=url, headers=headers, timeout_sec=request_timeout_sec, opener=opener)
+                if (run_name == "tscan" or run_name.endswith(".tscan")) and is_multi_tscan_parent(build_url):
+                    status, _, body = _request(method="GET", url=build_url.rstrip("/") + "/consoleText",
+                        headers=headers, timeout_sec=request_timeout_sec, opener=opener)
+                    if status != 200:
+                        raise OSError(f"TSCAN console request failed: HTTP {status}")
+                    child = quality_build_from_console(build_url, body.decode("utf-8", errors="replace"))
+                    if child:
+                        consecutive_errors[run_name] = 0
+                        pending[run_name] = child
+                        builds[run_name] = child
+                        print(f"TSCAN quality-check build: {child[1]}", flush=True)
+                        heartbeat[run_name] = "quality-check"
+                        continue
+                    if not resp.get("building") and resp.get("result"):
+                        raise RuntimeError(f"TSCAN quality-check build number missing in parent console: {build_url}")
             except (urllib.error.URLError, OSError) as e:
                 # 瞬时网络抖动（如 WinError 10060 连接超时）不应终止整条流水线；
                 # 仅记录 WARN 并重试，连续失败达到阈值才真正抛出。
@@ -1017,7 +1035,7 @@ def _maybe_trigger_changelog_async(
         changelog_cfg.update(state)
         _atomic_write_json(cfg_path, cfg, backup=False)
     except Exception as e:
-        print(f"WARN: Changelog async trigger failed: {e}", file=sys.stderr)
+        record_subtask_error(cfg, "changelog", e)
         # Do not fail the main build triggers
         return
 
@@ -1064,32 +1082,53 @@ def _download_tscan_artifacts(
     project: str,
     cfg: Dict[str, Any],
 ) -> None:
-    """Download TSCAN result zip files from Jenkins artifacts."""
-    tscan_files = ['BOOT_tscanResult.zip', 'OTA_tscanResult.zip', 'RECOVERY_tscanResult.zip']
+    """Download the exact quality-check artifacts, keeping platform prefixes."""
+    quality = is_multi_tscan_parent(build_url) or f"/job/{QUALITY_JOB}/" in build_url
+    if quality:
+        tracked = {"tscan": (int(build_url.rstrip("/").rsplit("/", 1)[-1]), build_url)}
+        result = _poll_build_results(builds=tracked, auth=auth, poll_interval_sec=5,
+            build_timeout_sec=int(_get_triggers_cfg(cfg).get("build_timeout_sec") or 21600),
+            request_timeout_sec=request_timeout_sec, opener=opener)
+        if result.get("tscan") != "SUCCESS":
+            raise RuntimeError(f"TSCAN quality-check failed: {result.get('tscan')}")
+        build_url = tracked["tscan"][1]
+        metadata = _request_json(method="GET", url=build_url.rstrip("/") + "/api/json?tree=artifacts[fileName,relativePath]",
+            headers={"Authorization": _basic_auth_header(auth)}, timeout_sec=request_timeout_sec, opener=opener)
+        artifacts = []
+        for item in metadata.get("artifacts") or []:
+            relative = str(item.get("relativePath") or "")
+            filename = relative.rsplit("/", 1)[-1]
+            if (relative.startswith("quality_results/") and ".." not in relative.split("/")
+                    and any(tscan_pattern(kind, cfg).fullmatch(filename) for kind in ("BOOT", "OTA", "RECOVERY"))):
+                artifacts.append((relative, filename))
+        if not artifacts:
+            raise RuntimeError(f"No matching platform TSCAN artifacts in quality-check build: {build_url}")
+        if len({name for _, name in artifacts}) != len(artifacts):
+            raise RuntimeError("Duplicate TSCAN artifact filenames in quality-check build")
+    else:
+        artifacts = [(f"{kind}_tscanResult.zip", f"{kind}_tscanResult.zip") for kind in ("BOOT", "OTA", "RECOVERY")]
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for fname in tscan_files:
-        artifact_url = f"{build_url.rstrip('/')}artifact/{fname}"
-        dest = out_dir / fname
-        try:
+    with tempfile.TemporaryDirectory(prefix="tscan_", dir=str(out_dir.parent)) as temp:
+        staged = Path(temp)
+        for relative, fname in artifacts:
+            artifact_url = build_url.rstrip("/") + "/artifact/" + urllib.parse.quote(relative, safe="/")
             print(f"  Downloading TSCAN artifact: {fname}")
-            _download_file(
-                url=artifact_url,
-                dest=dest,
-                auth=auth,
-                verify_tls=verify_tls,
-                timeout_sec=request_timeout_sec,
-                opener=opener,
-            )
-            print(f"    -> saved to {dest}")
-        except Exception as e:
-            print(f"WARN: failed to download {fname}: {e}", file=sys.stderr)
+            _download_file(url=artifact_url, dest=staged / fname, auth=auth, verify_tls=verify_tls,
+                timeout_sec=request_timeout_sec, opener=opener)
+        # Only replace previous TSCAN reports after every selected download succeeds.
+        for previous in out_dir.rglob("*_tscanResult.zip"):
+            previous.unlink()
+        for _, fname in artifacts:
+            shutil.move(str(staged / fname), str(out_dir / fname))
+            print(f"    -> saved to {out_dir / fname}")
 
     # 将 TSCAN 构建 URL 和上传配置写入 cfg（pipeline runner 会上传 NAS）
     jcfg = cfg.setdefault("jenkins", {})
     jbuilds = jcfg.setdefault("builds", {})
     tscan_build_cfg = jbuilds.setdefault("tscan", {})
     tscan_build_cfg["build_url"] = build_url.rstrip("/") + "/"
+    tscan_build_cfg["downloaded_build_url"] = build_url.rstrip("/") + "/"
     if "download" not in tscan_build_cfg:
         tscan_build_cfg["download"] = {
             "mode": "artifacts",
@@ -1135,8 +1174,9 @@ def _download_file(
     req = _ur.Request(url, method="GET")
     req.add_header("Authorization", auth_header)
 
-    do = opener.open if opener is not None else _ur.urlopen
-    with do(req, timeout=timeout_sec, context=ctx) as resp:
+    response = (opener.open(req, timeout=timeout_sec) if opener is not None and verify_tls
+                else _ur.urlopen(req, timeout=timeout_sec, context=ctx))
+    with response as resp:
         dest.write_bytes(resp.read())
 
 
@@ -1239,6 +1279,7 @@ def _run_tscan_standalone(args, cfg, cfg_path, auth, crumb, opener) -> int:
         opener=opener,
     )
     result = tscan_results.get("tscan", "?")
+    tscan_build_url = str(tscan_builds.get("tscan", (0, ""))[1] or "")
     print(f"TSCAN result: {result}")
     sys.stdout.flush()
 
@@ -1336,6 +1377,7 @@ def main() -> int:
         project = project[4:]
 
     cfg = _read_json(cfg_path)
+    cfg.pop("subtask_errors", None)
 
     def _cfg_get(dotted: str, default: Any) -> Any:
         try:
@@ -1406,6 +1448,7 @@ def main() -> int:
         q_release = ""
         q_debug = ""
         queue_map: Dict[str, str] = {}
+        tscan_queues: Dict[str, str] = {}
 
         if not bool(args.use_existing_build_urls) and not bool(args.mock_build_success):
             base_url = _get_jenkins_base_url(cfg)
@@ -1504,7 +1547,7 @@ def main() -> int:
                                 cfg_path=cfg_path, cfg=cfg, auth=auth,
                                 crumb=crumb, request_timeout_sec=int(args.request_timeout_sec), opener=opener)
                         except Exception as chg_err:
-                            print(f"WARN: changelog trigger after sync release failed: {chg_err}", file=sys.stderr)
+                            record_subtask_error(cfg, "changelog", chg_err)
                         # Remove release from queue_map so later polling skips it (already done)
                         queue_map.pop(f"{job_key}.release", None)
                         # Save config with release build_url
@@ -1531,30 +1574,34 @@ def main() -> int:
                 # ── 触发 TSCAN（与 release/debug 并行） ──
                 build_tscan_enabled = str(cfg.get("vars", {}).get("build_tscan") or "").strip().lower() == "yes"
                 if build_tscan_enabled and not bool(args.dry_run) and not bool(args.mock_build_success):
-                    tscan_raw = _get_trigger_params(cfg, "Tscan", None)
-                    if tscan_raw:
-                        tscan_job_url = str(_get_triggers_cfg(cfg).get("job_url") or "").strip()
-                        if not tscan_job_url:
-                            existing_jobs = _get_job_urls_from_platforms(cfg) if jobs_to_trigger else {}
-                            tscan_job_url = list(existing_jobs.values())[0] if existing_jobs else ""
-                        if tscan_job_url:
-                            tscan_params = _expand_jenkins_params(raw_params=dict(tscan_raw), full_cfg=cfg)
-                            _tscan_adjust_version(tscan_params)
-                            tscan_params = _with_platform_select(tscan_params, cfg, tscan_job_url)
-                            print(f"\n== Trigger TSCAN ({job_key}) — 与 release/debug 并行 ==")
-                            sys.stdout.flush()
-                            q_tscan = _trigger_build(
-                                job_url=tscan_job_url,
-                                base_url=base_url,
-                                auth=auth,
-                                parameters=tscan_params,
-                                crumb=crumb,
-                                timeout_sec=int(args.request_timeout_sec),
-                                dry_run=bool(args.dry_run),
-                                opener=opener,
-                            )
-                            queue_map[f"{job_key}.tscan"] = q_tscan
-                            print(f"  TSCAN queued: {q_tscan}")
+                    try:
+                        tscan_raw = _get_trigger_params(cfg, "Tscan", None)
+                        if tscan_raw:
+                            tscan_job_url = str(_get_triggers_cfg(cfg).get("job_url") or "").strip()
+                            if not tscan_job_url:
+                                existing_jobs = _get_job_urls_from_platforms(cfg) if jobs_to_trigger else {}
+                                tscan_job_url = list(existing_jobs.values())[0] if existing_jobs else ""
+                            if tscan_job_url:
+                                tscan_params = _expand_jenkins_params(raw_params=dict(tscan_raw), full_cfg=cfg)
+                                _tscan_adjust_version(tscan_params)
+                                tscan_params = _with_platform_select(tscan_params, cfg, tscan_job_url)
+                                print(f"\n== Trigger TSCAN ({job_key}) — 与 release/debug 并行 ==")
+                                sys.stdout.flush()
+                                q_tscan = _trigger_build(
+                                    job_url=tscan_job_url,
+                                    base_url=base_url,
+                                    auth=auth,
+                                    parameters=tscan_params,
+                                    crumb=crumb,
+                                    timeout_sec=int(args.request_timeout_sec),
+                                    dry_run=bool(args.dry_run),
+                                    opener=opener,
+                                )
+                                tscan_queues[f"{job_key}.tscan"] = q_tscan
+                                print(f"  TSCAN queued: {q_tscan}")
+
+                    except Exception as exc:
+                        record_subtask_error(cfg, "tscan", exc)
 
         auto_run_pipeline = bool(args.run_pipeline) or _cfg_bool("jenkins.triggers.auto_run_pipeline", False)
 
@@ -1680,51 +1727,25 @@ def main() -> int:
                 is_debug = run_name.endswith(".debug") or run_name == "debug"
                 is_release = run_name.endswith(".release") or run_name == "release"
                 if is_debug and result == "SUCCESS" and build_tscan_enabled_2:
-                    # 后台触发 TSCAN
-                    tscan_raw = _get_trigger_params(cfg, "Tscan", None)
-                    if tscan_raw:
-                        tscan_job_url = str(_get_triggers_cfg(cfg).get("job_url") or "").strip()
-                        if not tscan_job_url:
-                            existing_jobs = _get_job_urls_from_platforms(cfg)
-                            tscan_job_url = list(existing_jobs.values())[0] if existing_jobs else ""
-                        if tscan_job_url:
-                            print(f"\n== Trigger TSCAN (build_tscan=yes) — debug 已完成 ==")
-                            def _run_tscan_bg():
-                                try:
-                                    tscan_params = _expand_jenkins_params(raw_params=dict(tscan_raw), full_cfg=cfg)
-                                    _tscan_adjust_version(tscan_params)
-                                    tscan_params = _with_platform_select(tscan_params, cfg, tscan_job_url)
-                                    q = _trigger_build(job_url=tscan_job_url, base_url=_get_jenkins_base_url(cfg),
-                                        auth=auth, parameters=tscan_params, crumb=crumb,
-                                        timeout_sec=int(args.request_timeout_sec), dry_run=False, opener=opener)
-                                    tb = _poll_queues_for_builds(queues={"tscan": q}, auth=auth,
-                                        poll_interval_sec=int(args.poll_interval_sec),
-                                        queue_timeout_sec=int(args.queue_timeout_sec),
-                                        request_timeout_sec=int(args.request_timeout_sec), opener=opener,
-                                        on_build_started=_notify_started)
-                                    tr = _poll_build_results(builds=tb, auth=auth,
-                                        poll_interval_sec=int(args.poll_interval_sec),
-                                        build_timeout_sec=int(args.build_timeout_sec),
-                                        request_timeout_sec=int(args.request_timeout_sec), opener=opener,
-                                        on_build_finished=_notify_finished)
-                                    turl = str(tb.get("tscan", (0, ""))[1] or "")
-                                    if turl and tr.get("tscan") == "SUCCESS":
-                                        _download_tscan_artifacts(build_url=turl,
-                                            out_dir=Path("work/download") / f"{project}_tscan",
-                                            auth=auth, base_url=_get_jenkins_base_url(cfg),
-                                            verify_tls=bool(not getattr(args, 'no_tls_verify', False)),
-                                            request_timeout_sec=int(args.request_timeout_sec),
-                                            opener=opener, project=project, cfg=cfg)
-                                except Exception as e:
-                                    print(f"\n[TSCAN-BG] ERROR: {e}", file=sys.stderr)
-                            threading.Thread(target=_run_tscan_bg, daemon=True).start()
+                    try:
+                        tscan_raw = _get_trigger_params(cfg, "Tscan", None)
+                        job_url = str(_get_triggers_cfg(cfg).get("job_url") or "").strip()
+                        if tscan_raw and job_url:
+                            params = _expand_jenkins_params(raw_params=dict(tscan_raw), full_cfg=cfg)
+                            _tscan_adjust_version(params)
+                            params = _with_platform_select(params, cfg, job_url)
+                            tscan_queues["tscan"] = _trigger_build(job_url=job_url,
+                                base_url=_get_jenkins_base_url(cfg), auth=auth, parameters=params, crumb=crumb,
+                                timeout_sec=int(args.request_timeout_sec), dry_run=False, opener=opener)
+                    except Exception as exc:
+                        record_subtask_error(cfg, "tscan", exc)
                 if is_release and result == "SUCCESS":
                     try:
                         print("\n== Trigger CHANGELOG — release 已完成 ==")
                         _maybe_trigger_changelog_async(cfg_path=cfg_path, cfg=cfg, auth=auth,
                             crumb=crumb, request_timeout_sec=int(args.request_timeout_sec), opener=opener)
                     except Exception as e:
-                        print(f"WARN: changelog trigger failed: {e}", file=sys.stderr)
+                        record_subtask_error(cfg, "changelog", e)
 
             results = _poll_build_results(
                 builds=builds,
@@ -1785,7 +1806,7 @@ def main() -> int:
                             opener=opener,
                         )
                     except Exception as e:
-                        print(f"WARN: failed to start async changelog trigger: {e}", file=sys.stderr)
+                        record_subtask_error(cfg, "changelog", e)
 
             results = _poll_build_results(
                 builds=builds,
@@ -1797,6 +1818,24 @@ def main() -> int:
                 on_build_finished=_on_build_finished_parallel,
             )
 
+        # Optional TSCAN queues/builds have their own timeout and failure boundary.
+        # Firmware failures still stop publishing; TSCAN errors never override them.
+        if tscan_queues and all(value == "SUCCESS" for value in results.values()):
+            try:
+                optional_builds = _poll_queues_for_builds(queues=tscan_queues, auth=auth,
+                    poll_interval_sec=int(args.poll_interval_sec), queue_timeout_sec=int(args.queue_timeout_sec),
+                    request_timeout_sec=int(args.request_timeout_sec), opener=opener)
+                if len(optional_builds) != len(tscan_queues):
+                    raise RuntimeError("TSCAN queue did not return all build URLs")
+                optional_results = _poll_build_results(builds=optional_builds, auth=auth,
+                    poll_interval_sec=int(args.poll_interval_sec), build_timeout_sec=int(args.build_timeout_sec),
+                    request_timeout_sec=int(args.request_timeout_sec), opener=opener)
+                builds.update(optional_builds)
+                results.update(optional_results)
+                if any(optional_results.get(name) != "SUCCESS" for name in optional_builds):
+                    raise RuntimeError(f"TSCAN build failed or returned no result: {optional_results}")
+            except Exception as exc:
+                record_subtask_error(cfg, "tscan", exc)
         print("\nBuilds finished:")
         for run_name in sorted(builds.keys()):
             build_url = str(builds.get(run_name, (0, ""))[1] or "")
@@ -1827,7 +1866,7 @@ def main() -> int:
             _atomic_write_json(cfg_path, cfg, backup=not bool(args.no_backup))
 
         # Verify all triggered builds succeeded
-        failed = [r for r, v in results.items() if v != "SUCCESS"]
+        failed = [r for r, v in results.items() if v != "SUCCESS" and not (r == "tscan" or r.endswith(".tscan"))]
         if failed:
             if auto_run_pipeline:
                 print("\nPipeline was NOT started because Jenkins results are not all SUCCESS.")
@@ -1845,7 +1884,7 @@ def main() -> int:
                 tscan_build_url = str(build_url or "")
                 tscan_result_val = str(results.get(run_name, ""))
                 break
-        if tscan_build_url and tscan_result_val == "SUCCESS":
+        if tscan_build_url and tscan_result_val == "SUCCESS" and not (cfg.get("subtask_errors") or {}).get("tscan"):
             print(f"\n[TSCAN:DOWNLOAD] 开始下载 TSCAN 产物: {tscan_build_url}")
             sys.stdout.flush()
             try:
@@ -1863,7 +1902,9 @@ def main() -> int:
                 _atomic_write_json(cfg_path, cfg, backup=False)
                 print(f"\n[TSCAN:COMPLETE] TSCAN 产物已下载，config 已更新")
             except Exception as e:
-                print(f"\n[TSCAN:DOWNLOAD] WARN: 下载失败: {e}", file=sys.stderr)
+                record_subtask_error(cfg, "tscan", e)
+        if cfg.get("subtask_errors"):
+            _atomic_write_json(cfg_path, cfg, backup=False)
         sys.stdout.flush()
 
         if auto_run_pipeline:

@@ -244,6 +244,21 @@ class WebResumeTests(OfflineTest):
                           debug_jenkins_url=RELEASE_URL, vars={"build_release_mode": "split"})
         self.assertEqual(cfg["vars"]["build_release_mode"], "single")
 
+    def test_resume_keeps_platform_for_quality_check_artifact_selection(self):
+        original = json.loads(self.original.read_text())
+        original["platform_select"] = "mhs003"
+        self.original.write_text(json.dumps(original))
+        self.assertEqual(self.submit()["platform_select"], "mhs003")
+
+    def test_resume_keeps_subtask_failure_unless_a_tscan_url_is_explicitly_submitted(self):
+        original = json.loads(self.original.read_text())
+        original["subtask_errors"] = {"tscan": "previous timeout"}
+        self.original.write_text(json.dumps(original))
+        self.assertIn("tscan", self.submit()["subtask_errors"])
+        web._running_tasks.clear()
+        cfg = self.submit(tscan_jenkins_url="https://offline.invalid/job/quality/23/")
+        self.assertNotIn("tscan", cfg["subtask_errors"])
+
 
 if __name__ == "__main__":
     unittest.main()
