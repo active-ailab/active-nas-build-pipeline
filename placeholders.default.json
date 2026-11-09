@@ -463,6 +463,19 @@
         "required": false
       },
 
+      "{{REL_RELEASE_LOG_DIST_BZ2_BIN}}": {
+        "mode": "nas_share",
+        "run": "release",
+        "match": { "regex": "^log_dict_bz2_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+(?:_[^/]+)?\\.bin$" },
+        "required": false
+      },
+      "{{REL_MONKEY_LOG_DIST_BZ2_BIN}}": {
+        "mode": "nas_share",
+        "run": "debug",
+        "match": { "regex": "^log_dict_bz2_${release.project}_[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+(?:_[^/]+)?\\.bin$" },
+        "required": false
+      },
+
       "{{REL_MD5SUM_FILE_FILENAME}}": {
         "mode": "filename_for_share",
         "share_placeholder": "{{REL_MD5SUM_FILE}}"

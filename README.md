@@ -177,3 +177,5 @@ MHS003、MHS003S、NXP595/Apollo4/Apollo5 均支持两种方式，默认分开�
 项目可在自己的 `gqf_<project>.json` 中配置顶层 `platform_select` 和 `jenkins.triggers.job_url`，例如 fuji 使用 `"platform_select": "apollo5"` 及 HuamiOS_multi_platform 的 Job 地址。代码按配置传递 `PLATFORM_SELECT`，没有项目名称特判。配置支持逗号分隔的字符串或字符串列表，传递时去空格、转小写、去重；未配置时沿用入口默认值。网页发布和独立 TSCAN 优先读取当前项目 JSON 中的显式配置，历史备份与入口默认值不会覆盖它；`job_url_map` 仍可用于逐平台指定 Job。单任务和分开触发均使用同一份平台配置。
 
 HuamiOS_multi_platform 的构建内容使用独立参数：页面的 `vars.build_mode` 映射为 `RELEASE_BUILD_MODE`，`DEBUG_BUILD_MODE` 默认沿用 debug 配置的 `OTA,BOOT,RECOVERY`。单任务 `debug&release` 和分开触发均传递这两个参数，不再向该 Job 传递旧的 `BUILD_MODE`；原 HuamiOS Job 仍使用 `BUILD_MODE`。项目可在对应触发参数中显式配置 `RELEASE_BUILD_MODE` / `DEBUG_BUILD_MODE` 覆盖默认值。
+
+所有项目支持可选日志字典产物 `log_dict_bz2_<项目>_<四段版本号>_OTA.bin`。沿用现有产物下载和 NAS 上传流程；合并构建按第四位奇偶分流：奇数为 Release，偶数为 Debug（NAS 目录沿用 Monkey）。文档模板可增加 `{{REL_RELEASE_LOG_DIST_BZ2_BIN}}` 和 `{{REL_MONKEY_LOG_DIST_BZ2_BIN}}`，替换结果为带分享链接的文件名。单任务、分开打包和使用已有 NAS 清单续生成文档均支持；缺少该产物时不影响旧项目发布。匹配会校验项目、版本及奇偶，同一字段存在多个候选时会明确报错。

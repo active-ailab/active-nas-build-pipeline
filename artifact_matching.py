@@ -36,6 +36,8 @@ def artifact_pattern(placeholder: str, cfg: Dict[str, Any]) -> Optional[Pattern[
     patterns = {
         "REL_RELEASE_FULL_ARCHIVE": rf"^archive_{p}_{v}\.tgz$",
         "REL_MONKEY_FULL_ARCHIVE": rf"^archive_{p}_{v}\.tgz$",
+        "REL_RELEASE_LOG_DIST_BZ2_BIN": rf"^log_dict_bz2_{p}_[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(?:_[^/]+)?\.bin$",
+        "REL_MONKEY_LOG_DIST_BZ2_BIN": rf"^log_dict_bz2_{p}_[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(?:_[^/]+)?\.bin$",
         "REL_RELEASE_OTA_CLOUD_ARCHIVE": rf"^archive_OTA_CLOUD_{p}_{v}\.tgz$",
         "REL_RELEASE_OTA_SLEEP_ARCHIVE": rf"^archive_OTA_SLEEP_{p}_{v}\.tgz$",
         "REL_RELEASE_OTA_SIGN_ZIP": r"^watch@[^/]+_ota_sign\.zip$",
@@ -97,7 +99,8 @@ def eligible_artifacts(candidates: Iterable[Tuple[str, Any]], *, cfg: Dict[str, 
                                   "{{PREPARE_BOOT_ARCHIVE}}", "{{PREPARE_RECOVERY_ARCHIVE}}")
     expected = _expected_version(cfg, run)
     combined = is_combined_build(cfg)
-    if pattern and (expected or combined) and not independent:
+    log_dictionary = placeholder in ("{{REL_RELEASE_LOG_DIST_BZ2_BIN}}", "{{REL_MONKEY_LOG_DIST_BZ2_BIN}}")
+    if pattern and (expected or combined or log_dictionary) and not independent:
         versioned, unversioned = [], []
         for key, value in pairs:
             name = key.rsplit("/", 1)[-1]
@@ -107,7 +110,7 @@ def eligible_artifacts(candidates: Iterable[Tuple[str, Any]], *, cfg: Dict[str, 
             else:
                 matching = [v for v in versions if not expected or v == expected
                             or (len(expected.split(".")) == 3 and v.startswith(expected + "."))]
-                if combined and any(len(v.split(".")) == 4 for v in versions):
+                if (combined or log_dictionary) and any(len(v.split(".")) == 4 for v in versions):
                     matching = [v for v in matching if len(v.split(".")) == 4
                                 and int(v.split(".")[-1]) % 2 == (0 if run == "debug" else 1)]
                 if matching:

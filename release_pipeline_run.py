@@ -3994,6 +3994,8 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
         "{{REL_RELEASE_FACTORY_TOOL_ZIP}}",
         "{{REL_RELEASE_OTA_SLEEP_ARCHIVE}}",
         "{{REL_MONKEY_FULL_ARCHIVE}}",
+        "{{REL_RELEASE_LOG_DIST_BZ2_BIN}}",
+        "{{REL_MONKEY_LOG_DIST_BZ2_BIN}}",
         "{{REL_MD5SUM_FILE}}",
         "{{REL_CI_BUILD_URL}}",
         "{{REL_BUILD_LOG_FILE}}",
@@ -4238,6 +4240,7 @@ def _build_placeholder_replacements(*, cfg: Dict[str, Any], run_summaries: List[
     _set_share("{{REL_APP_MANIFEST_INFO}}", rel_sum, manifest_share_pat, "manifest xml")
     _set_share("{{REL_MD5SUM_FILE}}", rel_sum, md5_share_pat, "md5 file")
     for ph, summary in (("{{REL_RELEASE_MD5}}", rel_sum), ("{{REL_BUILD_LOG_FILE}}", rel_sum),
+                        ("{{REL_RELEASE_LOG_DIST_BZ2_BIN}}", rel_sum), ("{{REL_MONKEY_LOG_DIST_BZ2_BIN}}", dbg_sum),
                         ("{{REL_RELEASE_SENSORHUB_OTA_ZIP}}", rel_sum), ("{{REL_RELEASE_SENSORHUB_FCT_ZIP}}", rel_sum),
                         ("{{REL_MONKEY_SENSORHUB_OTA_ZIP}}", dbg_sum), ("{{REL_MONKEY_SENSORHUB_FCT_ZIP}}", dbg_sum)):
         _set_share(ph, summary, artifact_pattern(ph, cfg), ph)
