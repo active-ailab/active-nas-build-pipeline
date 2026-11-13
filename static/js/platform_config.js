@@ -92,6 +92,7 @@ const objectBranch = {
 }
 
 const template_node_token = {
+  fuji: "NYbnwgJsFi3xqUktEcbcD4aPnDb",
   windermere: "F1WJwadcvicnq9km4zqckukznhg",
   geneva: "RzHFw5ipYiU5ibkMxSfcgUfDnve",
   cologne: "QH7rwSCUqirpuJkedU9cLSXPnu7",

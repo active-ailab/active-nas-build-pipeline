@@ -2963,6 +2963,10 @@ def api_release(project: str):
     if "vars" in form_data:
         base_cfg["vars"] = {**base_cfg.get("vars", {}), **form_data["vars"]}
 
+    # 用户本次选择的文档模板优先于当前配置和历史备份。
+    if "feishu" in form_data and form_data["feishu"].get("template_node_token"):
+        base_cfg["feishu"]["template_node_token"] = form_data["feishu"]["template_node_token"]
+
     # 将前端 auto_bind_after_upgrade 映射到 Jenkins 构建参数 AUTH_CFG_AUTO_BINDING
     auto_bind_raw = (base_cfg.get("vars", {}).get("auto_bind_after_upgrade") or "").strip()
     if auto_bind_raw:

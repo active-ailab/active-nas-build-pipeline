@@ -855,7 +855,10 @@ async function nextStep4() {
   setBuildParamPlaceholder(); resetEditState();
   _setTscanStep5Mode(false);  // 非 TSCAN 模式确保隐藏 TSCAN 按钮
   toggleForm(4,5); updateStepStatus(4,5); currentStep = 5;
-  if (selectedVersionData && selectedVersionData.feishuTemplateNodeToken) {
+  if (template_node_token[selectedDevice]) {
+    // 当前项目预设优先，避免历史版本的旧模板覆盖更新后的映射。
+    selectWikiTokenForDevice(selectedDevice);
+  } else if (selectedVersionData && selectedVersionData.feishuTemplateNodeToken) {
     if (wikiTokenTomSelect) {
       // 检查 token 是否已在 options 中
       const token = selectedVersionData.feishuTemplateNodeToken;

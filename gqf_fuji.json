@@ -307,7 +307,7 @@
       },
       "_field_note": "左=本系统内字段名, 右=多维表格里的列名 (需在飞书侧先建好同名/同语义的列)。环节流水由 feishu_base_notifier.notify_stage() 逐环节追加一行"
     },
-    "template_node_token": "RzHFw5ipYiU5ibkMxSfcgUfDnve",
+    "template_node_token": "NYbnwgJsFi3xqUktEcbcD4aPnDb",
     "notification_open_id": "ou_784eb1795cc4a1016603b6f3cc66ada1"
   },
   "release": {
