@@ -32,6 +32,7 @@ from config_loader import read_json_with_base
 
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, stream_with_context
+from werkzeug.exceptions import HTTPException, InternalServerError
 
 # ── 配置 ──────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -41,6 +42,41 @@ DOWNLOAD_KEEP_COUNT = 5    # 每个项目保留最近 5 个下载版本
 app = Flask(__name__)
 app.jinja_env.auto_reload = True
 app.config['TEMPLATES_AUTO_RELOAD'] = True
+
+
+class ProjectConfigError(ValueError):
+    pass
+
+
+def _read_project_json(path: Path) -> Dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise ProjectConfigError(
+            f"配置文件 {path.name} 格式错误：第 {exc.lineno} 行、第 {exc.colno} 列，{exc.msg}") from exc
+    except (OSError, UnicodeError) as exc:
+        raise ProjectConfigError(f"无法读取配置文件 {path.name}（{type(exc).__name__}）") from exc
+    if not isinstance(value, dict):
+        raise ProjectConfigError(f"配置文件 {path.name} 的最外层必须是 JSON 对象")
+    return value
+
+
+@app.errorhandler(Exception)
+def _handle_request_error(error):
+    if isinstance(error, HTTPException):
+        if not request.path.startswith("/api/"):
+            return error
+        response = error.get_response()
+        response.set_data(json.dumps({"ok": False, "error": error.description}, ensure_ascii=False))
+        response.content_type = "application/json"
+        return response
+    app.logger.exception("Request failed: %s", request.path)
+    if not request.path.startswith("/api/"):
+        return InternalServerError()
+    if isinstance(error, ProjectConfigError):
+        return jsonify({"ok": False, "error": str(error)}), 400
+    return jsonify({"ok": False, "error": (
+        f"服务器处理失败（{type(error).__name__}），请查看后台终端的 Traceback")}), 500
 
 # ── 运行中的任务追踪 ──────────────────────────────────
 _running_tasks: Dict[str, Dict[str, Any]] = {}
@@ -112,7 +148,7 @@ def _restore_running_tasks():
     if not _RUNNING_TASKS_FILE.exists():
         return
     try:
-        data = json.loads(_RUNNING_TASKS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(_RUNNING_TASKS_FILE.read_text(encoding="utf-8-sig"))
     except Exception:
         return
     import datetime as _dt
@@ -180,7 +216,7 @@ STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
 def _load_stats() -> dict:
     if STATS_FILE.exists():
         try:
-            return json.loads(STATS_FILE.read_text(encoding="utf-8"))
+            return json.loads(STATS_FILE.read_text(encoding="utf-8-sig"))
         except Exception:
             pass
     return {"events": []}
@@ -222,7 +258,7 @@ def _load_user_feishu_token(user_id: str) -> Optional[dict]:
     if not tf.exists():
         return None
     try:
-        return json.loads(tf.read_text(encoding="utf-8"))
+        return json.loads(tf.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
 
@@ -332,7 +368,7 @@ def _list_baks(project: str) -> List[Dict[str, Any]]:
     for bak in candidates:
         suffix = bak.name.split(".bak.", 1)[-1]
         try:
-            cfg = json.loads(bak.read_text(encoding="utf-8"))
+            cfg = json.loads(bak.read_text(encoding="utf-8-sig"))
             rel = cfg.get("release") or {}
             v = cfg.get("vars") or {}
             result.append({
@@ -894,7 +930,7 @@ def api_feishu_app_id():
     """返回飞书应用的 app_id（前端免登需要）"""
     oauth = {}
     try:
-        common = json.loads((SCRIPT_DIR / "common.json").read_text(encoding="utf-8"))
+        common = json.loads((SCRIPT_DIR / "common.json").read_text(encoding="utf-8-sig"))
         oauth = common.get("feishu", {}).get("oauth", {})
     except Exception:
         pass
@@ -1179,7 +1215,7 @@ def _load_llm_config() -> dict:
 
     cfg = {"enabled": False, "provider": "deepseek", "api_key": "", "api_url": "", "model": "deepseek-chat", "temperature": 0, "max_tokens": 512, "timeout_sec": 10}
     try:
-        common = json.loads((SCRIPT_DIR / "common.json").read_text(encoding="utf-8"))
+        common = json.loads((SCRIPT_DIR / "common.json").read_text(encoding="utf-8-sig"))
         llm_cfg = common.get("llm", {})
         if llm_cfg:
             cfg.update(llm_cfg)
@@ -1379,7 +1415,7 @@ def _get_feishu_tenant_token():
 
     oauth = {}
     try:
-        common = json.loads((SCRIPT_DIR / "common.json").read_text(encoding="utf-8"))
+        common = json.loads((SCRIPT_DIR / "common.json").read_text(encoding="utf-8-sig"))
         oauth = common.get("feishu", {}).get("oauth", {})
     except Exception:
         pass
@@ -1473,7 +1509,7 @@ def _do_trigger_build(chat_id: str, device: str, version: str, params: dict, ope
             _feishu_reply_message(chat_id, f"❌ 设备 `{device}` 的配置文件不存在")
             return
 
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
         override_msg_parts = []
         if params.get("branch"):
             cfg.setdefault("release", {})["notes"] = params["branch"]
@@ -1610,7 +1646,7 @@ def _do_trigger_changelog(chat_id, device, params):
         if not cfg_path.exists():
             _feishu_reply_message(chat_id, f"❌ 设备 `{device}` 的配置文件不存在")
             return
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
         tag = params.get("tag", "") or cfg.get("build", {}).get("tag_algo", "")
         prev_name = params.get("prev", "")
         curr_name = params.get("curr", "") or cfg.get("release", {}).get("version_name", "")
@@ -1751,7 +1787,7 @@ def _do_trigger_tscan(chat_id, device, params):
         # 读取公共 Jenkins 账号（bot 触发无浏览器登录，与 build/changelog 对齐）
         jenkins_auth = {}
         try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
             auth = (cfg.get("jenkins") or {}).get("auth", {})
             bot_j_user = (auth.get("username") or "").strip()
             bot_j_pass = _resolve_credential(str(auth.get("password") or auth.get("token") or ""), "JENKINS_PASSWORD")
@@ -1790,7 +1826,7 @@ def _do_trigger_skip_jenkins(chat_id, device, params, open_id=""):
         jenkins_auth = {}
         try:
             cfg_path = SCRIPT_DIR / f"gqf_{device}.json"
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
             auth = (cfg.get("jenkins") or {}).get("auth", {})
             bot_j_user = (auth.get("username") or "").strip()
             bot_j_pass = _resolve_credential(str(auth.get("password") or auth.get("token") or ""), "JENKINS_PASSWORD")
@@ -1914,7 +1950,7 @@ def _record_user_identity(*, open_id: str, chat_id: str, chat_type: str = ""):
     identities: Dict[str, Any] = {}
     try:
         if USER_IDENTITY_FILE.exists():
-            identities = json.loads(USER_IDENTITY_FILE.read_text(encoding="utf-8"))
+            identities = json.loads(USER_IDENTITY_FILE.read_text(encoding="utf-8-sig"))
     except Exception:
         pass
     if not isinstance(identities, dict):
@@ -1933,7 +1969,7 @@ def _lookup_chat_id_from_open_id(open_id: str) -> str:
         return ""
     try:
         if USER_IDENTITY_FILE.exists():
-            identities = json.loads(USER_IDENTITY_FILE.read_text(encoding="utf-8"))
+            identities = json.loads(USER_IDENTITY_FILE.read_text(encoding="utf-8-sig"))
             return str((identities.get(open_id) or {}).get("chat_id", "") or "")
     except Exception:
         pass
@@ -2189,7 +2225,7 @@ def _build_confirm_card(intent, device, params, missing):
             cfg_path = Path(candidates[0])
     if cfg_path and cfg_path.exists():
         try:
-            c = _json.loads(cfg_path.read_text(encoding="utf-8"))
+            c = _json.loads(cfg_path.read_text(encoding="utf-8-sig"))
             v = c.get("vars", {})
             r = c.get("release", {})
             j = c.get("jenkins", {})
@@ -2432,7 +2468,7 @@ def api_projects():
         if ".bak." in f.name or ".tmp." in f.name:
             continue
         try:
-            cfg = json.loads(f.read_text(encoding="utf-8"))
+            cfg = json.loads(f.read_text(encoding="utf-8-sig"))
             rel = cfg.get("release") or {}
             projects.append({
                 "name": name,
@@ -2814,11 +2850,11 @@ def api_latest(project: str):
     if not bak:
         cfg_path = _find_project_config(project)
         if cfg_path and cfg_path.exists():
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
             return jsonify({"ok": True, "source": "config", "data": _sanitize_config_for_display(cfg)})
         return jsonify({"ok": False, "error": f"No bak or config found for project '{project}'"}), 404
 
-    cfg = json.loads(bak.read_text(encoding="utf-8"))
+    cfg = json.loads(bak.read_text(encoding="utf-8-sig"))
     return jsonify({
         "ok": True,
         "source": bak.name,
@@ -2845,7 +2881,7 @@ def api_version_detail(project: str, suffix: str):
             return jsonify({"ok": False, "error": f"Version '{suffix}' not found for project '{project}'"}), 404
         bak_file = candidates[0]
 
-    cfg = json.loads(bak_file.read_text(encoding="utf-8"))
+    cfg = json.loads(bak_file.read_text(encoding="utf-8-sig"))
     return jsonify({
         "ok": True,
         "source": bak_file.name,
@@ -2858,7 +2894,7 @@ def _merge_project_build_route(cfg: Dict[str, Any], form_data: Dict[str, Any],
                                project: str, standalone: bool = False) -> None:
     """当前项目 JSON 的显式路由优先于历史备份和入口默认值。"""
     current_path = SCRIPT_DIR / f"gqf_{project}.json"
-    current = json.loads(current_path.read_text(encoding="utf-8")) if current_path.exists() else cfg
+    current = _read_project_json(current_path) if current_path.exists() else cfg
     triggers = cfg.setdefault("jenkins", {}).setdefault("triggers", {})
     if "platform_select" in current:
         cfg["platform_select"] = current["platform_select"]
@@ -2892,6 +2928,9 @@ def api_release(project: str):
         return jsonify({"ok": False, "error": "Invalid JSON body"}), 400
 
     # 验证必填字段
+    if not isinstance(form_data, dict) or any(
+            not isinstance(form_data.get(key, {}), dict) for key in ("release", "vars", "feishu")):
+        return jsonify({"ok": False, "error": "请求及 release、vars、feishu 字段必须是 JSON 对象"}), 400
     release_info = form_data.get("release", {})
     vars_info = form_data.get("vars", {})
     if not release_info.get("version"):
@@ -2907,7 +2946,7 @@ def api_release(project: str):
         cfg_path = _find_project_config(project)
         if cfg_path and cfg_path.exists():
             # 如果配置已存在，读取并合并（保留 feishu tokens 等）
-            existing = json.loads(cfg_path.read_text(encoding="utf-8"))
+            existing = _read_project_json(cfg_path)
             # 只保留用户填写的必要字段，其余用模板覆盖
             for section in ("release", "vars"):
                 if section in form_data:
@@ -2919,11 +2958,11 @@ def api_release(project: str):
         # 已有项目：加载最新 bak 或当前 config
         bak = _find_latest_bak(project)
         if bak:
-            base_cfg = json.loads(bak.read_text(encoding="utf-8"))
+            base_cfg = _read_project_json(bak)
         else:
             cfg_path = _find_project_config(project)
             if cfg_path:
-                base_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                base_cfg = _read_project_json(cfg_path)
 
     if not base_cfg:
         return jsonify({"ok": False, "error": "No base config found"}), 500
@@ -3135,7 +3174,7 @@ def api_release(project: str):
                 user_id = (form_data.get("user_id") or "").strip()
                 if user_id:
                     try:
-                        updated_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                        updated_cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
                         _save_user_feishu_token(user_id, updated_cfg)
                     except Exception:
                         pass
@@ -3345,7 +3384,7 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
     cfg_path_orig = _find_project_config(project)
     if cfg_path_orig and cfg_path_orig.exists():
         try:
-            orig_cfg = json.loads(cfg_path_orig.read_text(encoding="utf-8"))
+            orig_cfg = json.loads(cfg_path_orig.read_text(encoding="utf-8-sig"))
             orig_vars = (orig_cfg.get("vars") or {}) if isinstance(orig_cfg, dict) else {}
             if isinstance(orig_vars, dict):
                 base_cfg.setdefault("vars", {})
@@ -3490,7 +3529,7 @@ def _launch_skip_jenkins_task(form_data: dict, project: str, _wiki_retry_count: 
                 # 保存用户飞书 token
                 if user_id:
                     try:
-                        updated_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                        updated_cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
                         _save_user_feishu_token(user_id, updated_cfg)
                     except Exception:
                         pass
@@ -3603,7 +3642,7 @@ def api_tscan_only(project: str):
     if not cfg_path.exists():
         return jsonify({"ok": False, "error": f"设备配置不存在: gqf_{device}.json"}), 404
 
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
 
     _merge_project_build_route(cfg, form_data, device, standalone=True)
     cfg.setdefault("vars", {})
@@ -3769,7 +3808,7 @@ def _abort_jenkins_builds(task_id: str, task: dict) -> int:
         _push_log(task_id, f"  配置文件不存在: gqf_{project}.json，跳过 Jenkins 终止")
         return 0
     try:
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     except Exception:
         _push_log(task_id, f"  配置文件读取失败: gqf_{project}.json，跳过 Jenkins 终止")
         return 0
@@ -3787,7 +3826,7 @@ def _abort_jenkins_builds(task_id: str, task: dict) -> int:
             common_path = SCRIPT_DIR / "common.json"
             if common_path.exists():
                 try:
-                    common_cfg = json.loads(common_path.read_text(encoding="utf-8"))
+                    common_cfg = json.loads(common_path.read_text(encoding="utf-8-sig"))
                     common_auth = common_cfg.get("jenkins", {}).get("auth", {})
                     if common_auth.get("username"):
                         auth_cfg = common_auth
@@ -3808,7 +3847,7 @@ def _abort_jenkins_builds(task_id: str, task: dict) -> int:
         common_path = SCRIPT_DIR / "common.json"
         if common_path.exists():
             try:
-                common_cfg = json.loads(common_path.read_text(encoding="utf-8"))
+                common_cfg = json.loads(common_path.read_text(encoding="utf-8-sig"))
                 base_url = str(common_cfg.get("jenkins", {}).get("base_url", "")).strip().rstrip("/")
             except Exception:
                 pass
@@ -4335,7 +4374,7 @@ def api_start_changelog(project: str):
     try:
         cl_cfg_path = SCRIPT_DIR / f"gqf_{device}.json"
         if cl_cfg_path.exists():
-            cl_cfg = json.loads(cl_cfg_path.read_text(encoding="utf-8"))
+            cl_cfg = json.loads(cl_cfg_path.read_text(encoding="utf-8-sig"))
             platform_select = cl_cfg.get("platform_select", "")
     except Exception:
         pass
@@ -4646,7 +4685,7 @@ def _notify_changelog_done(task: dict, feishu_link: str):
             text = f"用户 {operator} 正在编译 — {text}"
 
         # ── 1. 通过 webhook 发送开发者监控副本（common.json 的固定 URL → guoqifa）──
-        common_cfg = json.loads((SCRIPT_DIR / "common.json").read_text(encoding="utf-8"))
+        common_cfg = json.loads((SCRIPT_DIR / "common.json").read_text(encoding="utf-8-sig"))
         wh = (common_cfg.get("notifications") or {}).get("webhook") or {}
         if wh.get("enabled"):
             wh_url = str(os.environ.get("FEISHU_WEBHOOK_URL", "") or wh.get("url") or "").strip()
@@ -4712,7 +4751,7 @@ def start_feishu_ws():
     # 读取应用凭证
     common_path = SCRIPT_DIR / "common.json"
     try:
-        common = _json.loads(common_path.read_text(encoding="utf-8"))
+        common = _json.loads(common_path.read_text(encoding="utf-8-sig"))
         feishu_cfg = common.get("feishu", {}).get("oauth", {})
         FEISHU_APP_ID = feishu_cfg.get("app_id", "")
         FEISHU_APP_SECRET = feishu_cfg.get("app_secret", "")

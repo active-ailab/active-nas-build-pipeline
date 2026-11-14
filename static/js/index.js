@@ -6,6 +6,24 @@ tailwind.config = {
   }
 };
 
+async function readApiJsonResponse(response) {
+  const body = await response.text();
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch (_) {
+    const kind = /^\s*</.test(body) ? 'HTML 页面' : '非 JSON 内容';
+    throw new Error(`服务器返回了${kind}（HTTP ${response.status}），请查看后台终端日志；若经过代理，也请检查代理响应。`);
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error(`服务器响应格式错误（HTTP ${response.status}）`);
+  }
+  if (!response.ok && data.ok !== false) {
+    throw new Error(data.error || `服务器请求失败（HTTP ${response.status}）`);
+  }
+  return data;
+}
+
 let currentStep = 1;
 const totalStep = 8;
 
@@ -2605,7 +2623,7 @@ async function nextStep7() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const result = await resp.json();
+    const result = await readApiJsonResponse(resp);
     if (!result.ok) {
       alert('保存配置失败：' + (result.error || '未知错误'));
       return;
@@ -2614,7 +2632,7 @@ async function nextStep7() {
     window._jenkinsJobUrl = result.jenkins_job_url || '';
     console.log('配置已保存到 JSON 文件:', result.config_file, '任务ID:', taskId);
   } catch (err) {
-    alert('保存配置时发生网络错误：' + err.message);
+    alert('保存配置失败：' + err.message);
     return;
   }
 

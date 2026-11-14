@@ -24,7 +24,7 @@ def _deep_merge(base: Any, override: Any) -> Any:
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
-    raw = path.read_text(encoding="utf-8")
+    raw = path.read_text(encoding="utf-8-sig")
     obj = json.loads(raw)
     if not isinstance(obj, dict):
         raise RuntimeError(f"Config JSON must be an object: {path}")
