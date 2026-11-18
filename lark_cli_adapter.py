@@ -107,6 +107,8 @@ def _run(args: List[str], timeout_sec: int = LARK_TIMEOUT_SEC,
                 d = json.loads(out_text)
                 if d.get("ok") is False:
                     raise LarkCliError(f"lark-cli 错误: {out_text[:400]}")
+                if d.get("code", 0) != 0:
+                    raise LarkCliError(f"lark-cli API 错误: {out_text[:400]}")
                 if (d.get("data") or {}).get("result") == "failed":
                     raise LarkCliError(f"lark-cli str_replace 失败: {out_text[:400]}")
             except json.JSONDecodeError:
@@ -730,6 +732,7 @@ def _replace_placeholders_via_lark(
     """str_replace 纯文本替换 + block API 加超链接。
     模板格式100%保留，文件名变为可点击 NAS 链接。"""
     import secrets
+    from xml.sax.saxutils import escape
     replaced = 0
     skipped = 0
     link_items = []  # (filename, url)
@@ -749,7 +752,7 @@ def _replace_placeholders_via_lark(
         fp = os.path.join(os.getcwd(), fname)
         try:
             with open(fp, "w", encoding="utf-8") as f:
-                f.write(val)
+                f.write(escape(val))
             _run([
                 "docs", "+update", "--api-version", "v2",
                 "--doc", doc_token,
@@ -758,10 +761,14 @@ def _replace_placeholders_via_lark(
                 "--content", "@" + fname,
             ], timeout_sec=20)
             replaced += 1
-        except LarkCliError:
+        except LarkCliError as exc:
+            print(f"  WARN: {k} 替换失败: {exc}", file=sys.stderr)
             skipped += 1
         finally:
             os.unlink(fp)
+
+    # CLI 可能未匹配到被样式拆开的占位符；直接在文本块中补齐。
+    _replace_block_placeholders(doc_token, mapping)
 
     # Step 2: block API 给文件名加超链接
     if link_items:
@@ -771,31 +778,104 @@ def _replace_placeholders_via_lark(
     _verify_replacement(doc_token, mapping, required_placeholders=required_placeholders)
 
 
-def _add_links(doc_token: str, items: list) -> None:
-    """通过 lark-cli api 给文件名加超链接（PATCH 每个 block）"""
-    import json as _json
-
-    # 1. 获取所有 blocks
+def _document_blocks(doc_token: str) -> list:
+    """读取全部文本块（包括标题和表格单元格中的段落）。"""
     blocks: list = []
     page_token = ""
     while True:
         args = ["api", "GET", "/open-apis/docx/v1/documents/%s/blocks" % doc_token,
-                "--params", _json.dumps({"page_size": 500, "page_token": page_token}),
+                "--params", json.dumps({"page_size": 500, "page_token": page_token}),
                 "--as", "user"]
         r = _run(args, timeout_sec=30)
-        d = _json.loads(r.stdout)
+        d = json.loads(r.stdout)
+        if d.get("code", 0) != 0:
+            raise LarkCliError(f"读取文档块失败: {d}")
         items_page = (d.get("data") or {}).get("items") or []
         blocks.extend(items_page)
         page_token = (d.get("data") or {}).get("page_token") or ""
         if not page_token or not items_page:
             break
+    return blocks
 
-    link_map = {fname: url for fname, url in items}
+
+def _block_text(block: dict) -> dict:
+    # text、heading1..9、bullet、ordered 等均以 elements 保存文本。
+    return next((v for v in block.values()
+                 if isinstance(v, dict) and isinstance(v.get("elements"), list)), {})
+
+
+def _replace_block_placeholders(doc_token: str, mapping: Dict[str, str]) -> None:
+    """跨 text_run 匹配，不跨 mention 等非文本元素；保留周围样式。"""
+    import copy
+    import re
+    values = {k: str(v).strip().split("|", 1)[0].strip()
+              for k, v in mapping.items() if str(v).strip()}
+    if not values:
+        return
+    pattern = re.compile("|".join(re.escape(k) for k in sorted(values, key=len, reverse=True)))
+    for block in _document_blocks(doc_token):
+        elements = _block_text(block).get("elements", [])
+        result = []
+        changed = False
+        index = 0
+        while index < len(elements):
+            if "text_run" not in elements[index]:
+                result.append(elements[index])
+                index += 1
+                continue
+            runs = []
+            while index < len(elements) and "text_run" in elements[index]:
+                runs.append(elements[index])
+                index += 1
+            content = "".join(e["text_run"].get("content", "") for e in runs)
+            matches = list(pattern.finditer(content))
+            if not matches:
+                result.extend(runs)
+                continue
+            changed = True
+            # 每个字符保留其原始 run；替换值沿用占位符首字符的样式。
+            chars = [(c, e) for e in runs for c in e["text_run"].get("content", "")]
+            cursor = 0
+            pieces = []
+            for match in matches:
+                pieces.extend(chars[cursor:match.start()])
+                pieces.append((values[match.group()], chars[match.start()][1]))
+                cursor = match.end()
+            pieces.extend(chars[cursor:])
+            previous = None
+            for text, source in pieces:
+                if source is previous:
+                    result[-1]["text_run"]["content"] += text
+                else:
+                    element = copy.deepcopy(source)
+                    element["text_run"]["content"] = text
+                    result.append(element)
+                    previous = source
+        if changed:
+            response = _run(["api", "PATCH",
+                f"/open-apis/docx/v1/documents/{doc_token}/blocks/{block['block_id']}",
+                "--data", json.dumps({"update_text_elements": {"elements": result}}, ensure_ascii=False),
+                "--as", "user"], timeout_sec=20)
+            data = json.loads(response.stdout)
+            if data.get("code", 0) != 0:
+                raise LarkCliError(f"文档块占位符替换失败: {data}")
+
+
+def _add_links(doc_token: str, items: list) -> None:
+    """通过 lark-cli api 给文件名加超链接（PATCH 每个 block）"""
+    import copy
+    import json as _json
+
+    link_map = {fname: url for fname, url in items if fname and url}
+    if not link_map:
+        return
+    pattern = re.compile("|".join(re.escape(name) for name in sorted(link_map, key=len, reverse=True)))
+    blocks = _document_blocks(doc_token)
     linked = 0
 
     for b in blocks:
         bid = b.get("block_id", "")
-        text = b.get("text")
+        text = _block_text(b)
         if not isinstance(text, dict):
             continue
         els = text.get("elements") or []
@@ -806,15 +886,30 @@ def _add_links(doc_token: str, items: list) -> None:
                 new_els.append(el)
                 continue
             tr = el["text_run"]
-            content = str(tr.get("content", "")).strip()
+            content = str(tr.get("content", ""))
             style = dict(tr.get("text_element_style") or {})
-            if content in link_map and "link" not in style:
-                style["link"] = {"url": link_map[content]}
-                changed = True
-            nr = {"content": tr.get("content", "")}
-            if style:
-                nr["text_element_style"] = style
-            new_els.append({"text_run": nr})
+            matches = list(pattern.finditer(content)) if "link" not in style else []
+            if not matches:
+                new_els.append(el)
+                continue
+            changed = True
+            cursor = 0
+            for match in matches:
+                if cursor < match.start():
+                    prefix = copy.deepcopy(el)
+                    prefix["text_run"]["content"] = content[cursor:match.start()]
+                    new_els.append(prefix)
+                linked_element = copy.deepcopy(el)
+                linked_element["text_run"]["content"] = match.group()
+                linked_element["text_run"]["text_element_style"] = {
+                    **style, "link": {"url": link_map[match.group()]},
+                }
+                new_els.append(linked_element)
+                cursor = match.end()
+            if cursor < len(content):
+                suffix = copy.deepcopy(el)
+                suffix["text_run"]["content"] = content[cursor:]
+                new_els.append(suffix)
         if not changed:
             continue
         body = _json.dumps({
@@ -827,8 +922,9 @@ def _add_links(doc_token: str, items: list) -> None:
                   "/open-apis/docx/v1/documents/%s/blocks/%s" % (doc_token, bid),
                   "--data", body, "--as", "user"], timeout_sec=15)
         d = _json.loads(r.stdout)
-        if d.get("code") == 0:
-            linked += 1
+        if d.get("code", 0) != 0:
+            raise LarkCliError(f"文档块超链接更新失败: {d}")
+        linked += 1
 
     if linked > 0:
         print("  link: %d filenames -> clickable NAS links" % linked)

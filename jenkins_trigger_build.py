@@ -501,15 +501,53 @@ def _trigger_build(
             print(f"  - {k}={vv!r}")
         return ""
 
+    if parameters.get("BUILD_RELEASE") == "debug&release":
+        # Jenkins rejects values outside a ChoiceParameterDefinition before
+        # scheduling the build, often returning an unhelpful HTTP 500 page.
+        metadata_parts = urllib.parse.urlsplit(job)
+        metadata_path = metadata_parts.path.rstrip("/")
+        for endpoint in ("/buildWithParameters", "/build"):
+            if metadata_path.lower().endswith(endpoint.lower()):
+                metadata_path = metadata_path[:-len(endpoint)]
+                break
+        metadata_url = urllib.parse.urlunsplit((
+            metadata_parts.scheme, metadata_parts.netloc, metadata_path + "/api/json",
+            "tree=property[parameterDefinitions[name,choices]]", "",
+        ))
+        metadata = _request_json(
+            method="GET", url=metadata_url,
+            headers={"Authorization": _basic_auth_header(auth)},
+            timeout_sec=timeout_sec, opener=opener,
+        )
+        for prop in metadata.get("property", []):
+            for definition in prop.get("parameterDefinitions", []):
+                choices = definition.get("choices")
+                if (definition.get("name") == "BUILD_RELEASE"
+                        and isinstance(choices, list) and "debug&release" not in choices):
+                    raise RuntimeError(
+                        "Jenkins Job does not support BUILD_RELEASE=debug&release; "
+                        f"allowed choices: {choices!r}. "
+                        "Select split mode, or update the Jenkins Job choices AND "
+                        "pipeline implementation to build both paired versions. "
+                        "No build was submitted."
+                    )
+
     print(f"  [DEBUG] POST {url}  body_size={len(body) if body else 0}")
     sys.stdout.flush()
     status, hdrs, data = _request(method="POST", url=url, headers=headers, body=body, timeout_sec=timeout_sec, opener=opener)
 
-    if status in (401, 403):
+    if status == 401:
+        raise RuntimeError(
+            "Jenkins trigger failed (HTTP 401 Unauthorized): Jenkins 未接受当前账号凭据。"
+            "请在运行流水线的电脑检查 jenkins.auth.username/password、"
+            "JENKINS_USERNAME/JENKINS_PASSWORD 及本机凭据配置是否对应同一账号，"
+            "并确认密码或 API Token 有效。飞书登录态不用于 Jenkins 认证。"
+        )
+    if status == 403:
         text = data.decode("utf-8", errors="replace")
         raise RuntimeError(
             f"Jenkins trigger failed (HTTP {status}). "
-            f"If CSRF is enabled, ensure crumbIssuer is reachable. body={text[:2000]}"
+            f"Check Job/Build permissions and CSRF crumb configuration. body={text[:2000]}"
         )
     if status < 200 or status >= 400:
         text = data.decode("utf-8", errors="replace")
@@ -1468,7 +1506,10 @@ def main() -> int:
                 triggers_cfg = _get_triggers_cfg(cfg)
                 trigger_mode = str(triggers_cfg.get("modes", "async") or "async").strip().lower()
                 is_sync = (trigger_mode == "sync")
-                if is_sync:
+                combined_build = str((cfg.get("vars") or {}).get("build_release_mode") or "").strip().lower() == "single"
+                if combined_build:
+                    print("\n== Trigger mode: SINGLE (debug&release in one build) ==")
+                elif is_sync:
                     print(f"\n== Trigger mode: SYNC (Release → wait → Debug) ==")
                 else:
                     print(f"\n== Trigger mode: ASYNC (Release + Debug parallel) ==")

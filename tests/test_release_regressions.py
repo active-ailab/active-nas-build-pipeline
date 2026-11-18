@@ -114,6 +114,53 @@ class DocumentTests(OfflineTest):
         create.assert_not_called()
 
 
+class TriggerPreflightTests(OfflineTest):
+    def trigger(self, *, mode="debug&release", dry_run=False, job_url="https://offline.invalid/job/HuamiOS/"):
+        return jenkins._trigger_build(
+            job_url=job_url, base_url="https://offline.invalid/",
+            auth=jenkins.JenkinsAuth("offline", "offline"), parameters={"BUILD_RELEASE": mode},
+            crumb=None, timeout_sec=5, dry_run=dry_run, opener=None)
+
+    def test_dry_run_never_queries_or_submits(self):
+        metadata = self.patch(jenkins, "_request_json")
+        post = self.patch(jenkins, "_request")
+        self.assertEqual(self.trigger(dry_run=True), "")
+        metadata.assert_not_called()
+        post.assert_not_called()
+
+    def test_split_build_never_requires_combined_build_metadata(self):
+        metadata = self.patch(jenkins, "_request_json")
+        post = self.patch(jenkins, "_request", return_value=(201, {"Location": "/queue/item/1/"}, b""))
+        self.assertEqual(self.trigger(mode="release"), "https://offline.invalid/queue/item/1/")
+        metadata.assert_not_called()
+        self.assertEqual(post.call_count, 1)
+
+    def test_failed_metadata_lookup_never_submits_a_build(self):
+        self.patch(jenkins, "_request_json", side_effect=RuntimeError("HTTP 403"))
+        post = self.patch(jenkins, "_request")
+        with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
+            self.trigger()
+        post.assert_not_called()
+
+    def test_metadata_query_removes_build_endpoint_and_preserves_job_path(self):
+        metadata = self.patch(jenkins, "_request_json", return_value={})
+        self.patch(jenkins, "_request", return_value=(201, {"Location": "/queue/item/1/"}, b""))
+        for endpoint in ("build", "buildWithParameters", "buildwithparameters"):
+            with self.subTest(endpoint=endpoint):
+                self.trigger(job_url="https://offline.invalid/jenkins/job/HuamiOS/" + endpoint + "?token=offline")
+                url = metadata.call_args.kwargs["url"]
+                self.assertTrue(url.startswith("https://offline.invalid/jenkins/job/HuamiOS/api/json?"), url)
+                self.assertNotIn("token=", url)
+
+    def test_authentication_and_permission_errors_are_distinguished(self):
+        post = self.patch(jenkins, "_request")
+        for status, message in ((401, "Unauthorized"), (403, "permissions")):
+            with self.subTest(status=status):
+                post.return_value = (status, {}, b"denied")
+                with self.assertRaisesRegex(RuntimeError, message):
+                    self.trigger(mode="release")
+
+
 class ArtifactTests(OfflineTest):
     def setUp(self):
         super().setUp()
@@ -265,6 +312,30 @@ class PlatformTests(OfflineTest):
         self.assertEqual(jenkins._run_tscan_standalone(args, cfg, Path("offline.json"),
                          jenkins.JenkinsAuth("offline", "offline"), None, None), 0)
         self.assertEqual(trigger.call_args[1]["parameters"]["PLATFORM_SELECT"], "mhs003")
+
+    def test_unsupported_combined_build_rejected_before_post(self):
+        self.patch(jenkins, "_request_json", return_value={"property": [
+            {"parameterDefinitions": [{"name": "BUILD_RELEASE", "choices": ["debug", "release"]}]}]})
+        post = self.patch(jenkins, "_request")
+        with self.assertRaisesRegex(RuntimeError, "does not support BUILD_RELEASE"):
+            jenkins._trigger_build(
+                job_url="https://offline.invalid/job/HuamiOS/", base_url="https://offline.invalid/",
+                auth=jenkins.JenkinsAuth("offline", "offline"),
+                parameters={"BUILD_RELEASE": "debug&release"}, crumb=None,
+                timeout_sec=5, dry_run=False, opener=None)
+        post.assert_not_called()
+
+    def test_supported_combined_build_preserves_encoded_parameter(self):
+        self.patch(jenkins, "_request_json", return_value={"property": [
+            {"parameterDefinitions": [{"name": "BUILD_RELEASE", "choices": ["debug", "release", "debug&release"]}]}]})
+        post = self.patch(jenkins, "_request", return_value=(201, {"Location": "/queue/item/1/"}, b""))
+        queue = jenkins._trigger_build(
+            job_url="https://offline.invalid/job/HuamiOS/", base_url="https://offline.invalid/",
+            auth=jenkins.JenkinsAuth("offline", "offline"),
+            parameters={"BUILD_RELEASE": "debug&release"}, crumb=None,
+            timeout_sec=5, dry_run=False, opener=None)
+        self.assertEqual(queue, "https://offline.invalid/queue/item/1/")
+        self.assertEqual(post.call_args[1]["body"], b"BUILD_RELEASE=debug%26release")
 
     def test_nxp_single_and_split_trigger_counts(self):
         temp = Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir=str(ROOT / "output"))))

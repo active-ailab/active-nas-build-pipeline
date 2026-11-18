@@ -4824,6 +4824,13 @@ def jenkins_download_artifacts(
                     timeout_sec=timeout_sec, dest=dest, show_progress=False,
                 )
             except RuntimeError as e:
+                print(f"WARN: {rel}: direct download failed, retrying once: {e}", file=sys.stderr)
+                try:
+                    _curl_download_file(url=url, netrc_path=netrc.path, verify_tls=verify_tls,
+                        timeout_sec=timeout_sec, dest=dest, show_progress=False)
+                    return
+                except RuntimeError as retry_error:
+                    direct_error = str(retry_error)
                 basename = Path(rel).name
                 zip_url = f"{build_url}artifact/{_encode_path_keep_slash(rel)}/*zip*/{basename}.zip"
                 zip_dest = dest.with_name(dest.name + ".zip_tmp")
@@ -4833,14 +4840,20 @@ def jenkins_download_artifacts(
                         timeout_sec=timeout_sec, dest=zip_dest, show_progress=False,
                     )
                     with zipfile.ZipFile(str(zip_dest), "r") as zf:
-                        zf.extractall(str(dest))
+                        members = [entry for entry in zf.infolist() if not entry.is_dir()
+                                   and entry.filename.replace("\\", "/").rsplit("/", 1)[-1] == basename]
+                        if len(members) != 1:
+                            raise RuntimeError(f"Jenkins fallback ZIP must contain exactly one {basename}; found {len(members)}")
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(members[0]) as source, dest.open("wb") as target:
+                            shutil.copyfileobj(source, target)
                     if zip_dest.exists():
                         zip_dest.unlink()
                 except Exception as e2:
                     if zip_dest.exists():
                         try: zip_dest.unlink()
                         except Exception: pass
-                    raise RuntimeError(str(e2)) from e2
+                    raise RuntimeError(f"direct download: {direct_error}; ZIP fallback: {e2}") from e2
 
         def _download_one(idx_rel_url):
             idx, rel, url = idx_rel_url
@@ -4877,6 +4890,7 @@ def jenkins_download_artifacts(
                         result["error"] = f"retry download failed: {e}"
             return result
 
+        failures = []
         workers = min(len(selected), 8)
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_download_one, (i, r, u)): i for i, (r, u) in enumerate(selected, start=1)}
@@ -4884,10 +4898,27 @@ def jenkins_download_artifacts(
                 res = f.result()
                 if not res["ok"]:
                     print(f"  [{res['idx']}/{len(selected)}] {res['rel']} ERROR: {res.get('error','')[:100]}")
+                    failures.append(res)
+
+        optional_failures = [item for item in failures
+                             if re.fullmatch(r"manifest_.+\.xml", Path(item["rel"]).name, re.IGNORECASE)]
+        for item in optional_failures:
+            failed_path = out_dir / item["rel"]
+            if out_dir.resolve() not in failed_path.resolve().parents:
+                raise RuntimeError(f"Unsafe artifact path: {item['rel']}")
+            if failed_path.is_file():
+                failed_path.unlink()
+            print(f"WARN: optional manifest {item['rel']} download failed: {item.get('error', '')[:300]}; omit its document link and continue publishing.", file=sys.stderr)
+        required_failures = [item for item in failures if item not in optional_failures]
+        if required_failures:
+            detail = "; ".join(f"{item['rel']}: {item.get('error', '')[:200]}"
+                               for item in sorted(required_failures, key=lambda item: item["rel"])[:8])
+            raise RuntimeError(f"Jenkins artifact download incomplete ({len(required_failures)}/{len(selected)} required files failed): {detail}")
 
     _dl_total = time.time() - _dl_t0
-    print(f"Jenkins: download done in {_dl_total:.1f}s ({len(selected)} files)")
-    return len(selected)
+    downloaded = len(selected) - len(failures)
+    print(f"Jenkins: download done in {_dl_total:.1f}s ({downloaded}/{len(selected)} files, {len(failures)} optional manifest(s) skipped)")
+    return downloaded
 
 
 def _run_uploader(
