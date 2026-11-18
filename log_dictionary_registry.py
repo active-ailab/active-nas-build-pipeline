@@ -4,6 +4,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
@@ -36,11 +37,15 @@ def registry_request(base_url, *, method="GET", query=None, payload=None, timeou
     request = urllib.request.Request(url, data=body, method=method,
         headers={"Content-Type": "application/json; charset=utf-8"})
     # POST is deliberately never retried: each accepted request creates a new row.
-    with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-        expected = 201 if method == "POST" else 200
-        if response.status != expected:
-            raise RuntimeError(f"字典登记接口返回 HTTP {response.status}，预期 {expected}")
-        return json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+            expected = 201 if method == "POST" else 200
+            if response.status != expected:
+                raise RuntimeError(f"字典登记接口返回 HTTP {response.status}，预期 {expected}")
+            return json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(2000).decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"字典登记接口 {method} 返回 HTTP {exc.code}: {detail or exc.reason}") from exc
 
 
 def register_dictionary(base_url, payload, *, timeout_sec):

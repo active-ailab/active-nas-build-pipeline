@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import urllib.error
 import tempfile
 import zlib
 
@@ -125,19 +126,28 @@ class DictionaryRegistryTests(unittest.TestCase):
         self.assertIn("%E7%89%88%E6%9C%AC", open_url.call_args[0][0].full_url)
         response.__enter__.return_value.read.assert_called_once_with(1_000_001)
 
+    def test_http_error_includes_server_response_detail(self):
+        error = urllib.error.HTTPError("https://server.invalid/api/v1/dictionaries", 503,
+            "Service Unavailable", {}, io.BytesIO(b'{"detail":"database unavailable"}'))
+        with mock.patch.object(registry.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "POST.*HTTP 503.*database unavailable"):
+                registry.registry_request("https://server.invalid", method="POST", payload={})
+
 
 class DocumentRegistryIntegrationTests(unittest.TestCase):
     """Exercise the same skip-download/upload path as the direct-document UI."""
 
-    def run_document(self, *, dictionary=True, registry_failure=False, skip_document=False):
+    def run_document(self, *, dictionary=True, registry_failure=False, skip_document=False,
+                     document_failure=False, nas_failure=False):
         from config_loader import read_json_with_base
         import release_pipeline_run as pipeline
         from lark_cli_adapter import ReleaseDocResult
 
         root = Path(__file__).resolve().parents[1]
         with contextlib.ExitStack() as stack:
-            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            self.output = io.StringIO()
+            stack.enter_context(contextlib.redirect_stdout(self.output))
+            stack.enter_context(contextlib.redirect_stderr(self.output))
             for target in ("urllib.request.urlopen", "urllib.request.OpenerDirector.open",
                            "requests.sessions.Session.request", "subprocess.Popen"):
                 stack.enter_context(mock.patch(target, side_effect=AssertionError("External action: " + target)))
@@ -173,11 +183,13 @@ class DocumentRegistryIntegrationTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(pipeline, "_build_placeholder_replacements", return_value={}))
             stack.enter_context(mock.patch.object(pipeline, "_LARK_CLI_AVAILABLE", True))
             read = stack.enter_context(mock.patch.object(pipeline, "read_nas_dictionary", return_value=b"NAS dictionary bytes"))
+            if nas_failure:
+                read.side_effect = TimeoutError("NAS read timed out")
             sequence = []
 
             def request(base_url, *, method="GET", payload=None, **kwargs):
                 sequence.append(method)
-                if registry_failure:
+                if registry_failure and (registry_failure != "post" or method == "POST"):
                     raise RuntimeError("registry unavailable")
                 return {"id": 41, **payload} if method == "POST" else {"items": [], "has_more": False}
 
@@ -185,6 +197,8 @@ class DocumentRegistryIntegrationTests(unittest.TestCase):
 
             def publish(**kwargs):
                 sequence.append("publish")
+                if document_failure:
+                    raise RuntimeError("document unavailable")
                 return ReleaseDocResult(wiki_url="https://docs.invalid/verified")
 
             document = stack.enter_context(mock.patch.object(pipeline, "lark_publish_release_document", side_effect=publish))
@@ -207,12 +221,34 @@ class DocumentRegistryIntegrationTests(unittest.TestCase):
         api.assert_not_called()
         read.assert_not_called()
         document.assert_called_once()
+        self.assertNotIn("[DictLog:WARN]", self.output.getvalue())
 
-    def test_registry_failure_stops_document_publication(self):
-        code, sequence, api, read, document = self.run_document(registry_failure=True)
+    def test_registry_query_or_post_failure_still_publishes_and_warns_at_end(self):
+        for failure, expected in ((True, ["GET", "publish"]), ("post", ["GET", "POST", "publish"])):
+            with self.subTest(failure=failure):
+                code, sequence, api, read, document = self.run_document(registry_failure=failure)
+                self.assertEqual(code, 0)
+                self.assertEqual(sequence, expected)
+                document.assert_called_once()
+                lines = self.output.getvalue().strip().splitlines()
+                self.assertEqual(lines[-2], "Pipeline complete.")
+                self.assertIn("[DictLog:WARN]", lines[-1])
+                self.assertIn("registry unavailable", lines[-1])
+
+    def test_document_failure_remains_a_failure_with_registration_warning_at_end(self):
+        code, sequence, api, read, document = self.run_document(registry_failure="post", document_failure=True)
         self.assertNotEqual(code, 0)
-        self.assertEqual(sequence, ["GET"])
-        document.assert_not_called()
+        self.assertEqual(sequence, ["GET", "POST", "publish"])
+        self.assertIn("document unavailable", self.output.getvalue())
+        self.assertIn("[DictLog:WARN]", self.output.getvalue().strip().splitlines()[-1])
+
+    def test_nas_dictionary_read_failure_does_not_block_document(self):
+        code, sequence, api, read, document = self.run_document(nas_failure=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(sequence, ["publish"])
+        api.assert_not_called()
+        document.assert_called_once()
+        self.assertIn("TimeoutError: NAS read timed out", self.output.getvalue().strip().splitlines()[-1])
 
     def test_skipping_both_documents_never_registers(self):
         code, sequence, api, read, document = self.run_document(skip_document=True)

@@ -5564,6 +5564,8 @@ def main() -> int:
         if rel_url_single:
             builds.setdefault("debug", {})["build_url"] = rel_url_single
 
+    dictionary_registration_error = ""
+
     def _finalize(exit_code: int) -> int:
         # Build a concise final message.
         release_cfg_final = cfg.get("release") or {}
@@ -5660,7 +5662,10 @@ def main() -> int:
 
         _notify_base_stage(cfg, "发布完成", "成功" if int(exit_code) == 0 else "失败")
 
-        print("\nPipeline complete." if exit_code == 0 else "\nPipeline failed.")
+        print("\nPipeline complete." if exit_code == 0 else "\nPipeline failed.", flush=True)
+        if dictionary_registration_error:
+            print(f"[DictLog:WARN] 日志字典登记失败（不影响文档生成）: {dictionary_registration_error}",
+                  file=sys.stderr, flush=True)
         return int(exit_code)
 
     # Map upload specs by name for convenience
@@ -6257,7 +6262,7 @@ def main() -> int:
     else:
         print("[TSCAN:SKIP] 子任务失败，跳过报告下载和上传，继续生成发布文档")
 
-    # Dictionary metadata must be available before either document is published.
+    # Dictionary registration is best-effort; summarize failures after publishing.
     if (doc_enabled and not args.skip_doc) or (feishu_enabled and not args.skip_feishu):
         try:
             sync_log_dictionaries(
@@ -6267,10 +6272,7 @@ def main() -> int:
                     timeout_sec=nas_timeout_sec, verify_tls=nas_verify_tls),
             )
         except Exception as exc:
-            local_doc_status = f"failed (日志字典同步失败: {exc})"
-            print(f"ERROR: 日志字典同步失败，停止生成文档: {exc}", file=sys.stderr)
-            _notify_base_stage(cfg, "日志字典登记", "失败")
-            return _finalize(1)
+            dictionary_registration_error = f"{type(exc).__name__}: {exc}"
 
     # Generate local Feishu-style version doc (Markdown)
     md: Optional[str] = None
