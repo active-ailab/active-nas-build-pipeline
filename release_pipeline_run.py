@@ -30,6 +30,7 @@ SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 from config_loader import read_json_with_base
+from log_dictionary_registry import sync_log_dictionaries, read_nas_dictionary
 from subtask_status import record_subtask_error, failed_optional_placeholder
 from artifact_matching import PREPARE_ROLES, ArtifactSelectionError, artifact_pattern, select_artifact, is_combined_build
 from changelog_state import (
@@ -6224,6 +6225,21 @@ def main() -> int:
             run_summaries[:] = [run for run in run_summaries if run.get("name") != "tscan"]
     else:
         print("[TSCAN:SKIP] 子任务失败，跳过报告下载和上传，继续生成发布文档")
+
+    # Dictionary metadata must be available before either document is published.
+    if (doc_enabled and not args.skip_doc) or (feishu_enabled and not args.skip_feishu):
+        try:
+            sync_log_dictionaries(
+                cfg=cfg, runs=run_summaries, dry_run=args.dry_run,
+                read_file=lambda path: read_nas_dictionary(
+                    base_url=nas_base_url, path=path, username=nas_user, password=nas_pass,
+                    timeout_sec=nas_timeout_sec, verify_tls=nas_verify_tls),
+            )
+        except Exception as exc:
+            local_doc_status = f"failed (日志字典同步失败: {exc})"
+            print(f"ERROR: 日志字典同步失败，停止生成文档: {exc}", file=sys.stderr)
+            _notify_base_stage(cfg, "日志字典登记", "失败")
+            return _finalize(1)
 
     # Generate local Feishu-style version doc (Markdown)
     md: Optional[str] = None

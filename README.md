@@ -180,6 +180,8 @@ HuamiOS_multi_platform 的构建内容使用独立参数：页面的 `vars.build
 
 所有项目支持可选日志字典产物 `log_dict_bz2_<项目>_<四段版本号>_OTA.bin`。沿用现有产物下载和 NAS 上传流程；合并构建按第四位奇偶分流：奇数为 Release，偶数为 Debug（NAS 目录沿用 Monkey）。文档模板可增加 `{{REL_RELEASE_LOG_DIST_BZ2_BIN}}` 和 `{{REL_MONKEY_LOG_DIST_BZ2_BIN}}`，替换结果为带分享链接的文件名。单任务、分开打包和使用已有 NAS 清单续生成文档均支持；缺少该产物时不影响旧项目发布。匹配会校验项目、版本及奇偶，同一字段存在多个候选时会明确报错。
 
+生成版本文档前，流水线自动将本次日志字典元信息登记到 [DictLog 服务](http://zeppos.zepp.com/dictlog/docs#/)。从 NAS 实际文件读取压缩后大小与 CRC32，提交项目、构建类型（release/debug）、文件路径、镜像版本和 Jenkins 构建号；OTA 镜像类型为 watch，BOOT 为 bootloader，RECOVERY 为 recovery。有分享链接时同时提交。登记前分页查询相同文件和构建记录，续生成文档时复用已有记录；POST 不自动重试。同步失败会终止文档生成并报错，无字典时继续发布。跳过两个文档步骤或 dry-run 时不登记。可在项目配置中设置 `"log_dictionary_registry": {"enabled": false}` 关闭，或通过 `base_url`（默认 `http://zeppos.zepp.com/dictlog`）、`timeout_sec`（默认 30）调整服务地址和超时。仅重发已有 Markdown 的 `lark_release.py doc` 不执行产物登记；续生成应使用发布流水线并跳过下载、准备和上传，同时保留分享链接步骤，以便从 NAS 清单发现字典文件。
+
 HuamiOS_multi_platform 的 TSCAN 会从本次父构建日志中的 `HuamiOS_multi_platform_quality_check #编号` 定位下游构建，以下游状态作为完成结果，并保存下游链接；不会查询共享 Job 的 lastBuild。产物从该下游的 `quality_results/<平台>/` 清单下载，保留如 `mhs003_OTA_tscanResult.zip` 的文件名，上传到 Monkey。`{{REL_TSCAN_BOOT}}`、`{{REL_TSCAN_OTA}}`、`{{REL_TSCAN_RECOVERY}}` 同时兼容带平台前缀和旧文件名。独立 TSCAN 和直接使用已有 CI 链接生成文档也使用这套解析逻辑；缺少下游编号、下游失败或下载失败时明确报错。
 
 随主发布运行的 TSCAN 和 changelog 为可选子任务：触发失败、排队或构建超时、任务失败、报告下载失败或差分报告无结果时，记录异常及子任务失败状态，主固件下载、NAS 上传和文档生成继续。失败子任务的旧报告和链接不会被重新用于文档。独立 TSCAN / 独立 changelog 失败或无结果时，仅结束自己的任务并返回失败；Release/Debug 固件构建失败仍会中断主发布。
